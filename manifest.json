@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "version": "1.0.0",
+  "default_locale": "en",
+  "minimum_chrome_version": "116",
+  "description": "__MSG_extDescription__",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "downloads",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "cookies",
+    "declarativeNetRequestWithHostAccess",
+    "alarms",
+    "offscreen"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+  "host_permissions": [
+    "*://*.skool.com/*",
+    "*://*.mux.com/*",
+    "*://*.loom.com/*",
+    "*://*.vimeo.com/*",
+    "*://*.vimeocdn.com/*",
+    "*://*.akamaized.net/*",
+    "*://*.youtube.com/*",
+    "*://*.youtube-nocookie.com/*",
+    "*://*.googlevideo.com/*",
+    "*://*.wistia.com/*",
+    "*://*.wistia.net/*",
+    "*://*.cloudfront.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.skool.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

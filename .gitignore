@@ -1,0 +1,9 @@
+# Build outputs — distributed as GitHub Release assets, not committed.
+dist/
+*.zip
+
+# Internal design docs / specs (not for the public repo).
+docs/
+
+node_modules/
+.DS_Store

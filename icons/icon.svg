@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Skool Video Downloader icon: amber rounded square + white down-arrow (no tray bar). -->
+  <rect width="128" height="128" rx="28" fill="#F59E0B"/>
+  <g fill="#ffffff" stroke="#ffffff" stroke-width="4" stroke-linejoin="round">
+    <rect x="54" y="30" width="20" height="34" rx="6"/>
+    <polygon points="34,56 94,56 64,100"/>
+  </g>
+</svg>
