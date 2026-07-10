@@ -103,6 +103,20 @@ function stripYouTube(dir) {
     'Skool, Loom, Vimeo &amp; Wistia',
     'popup feature line');
   fs.writeFileSync(hp, html);
+
+  // 6. Drop "YouTube" from the welcome page platform copy — the CWS build must
+  // not advertise saving YouTube videos anywhere a reviewer might look.
+  const wp = path.join(dir, 'welcome.html');
+  let welcome = fs.readFileSync(wp, 'utf8');
+  welcome = mustReplace(welcome,
+    'Loom, Vimeo, YouTube or Wistia',
+    'Loom, Vimeo or Wistia',
+    'welcome platform line');
+  welcome = mustReplace(welcome,
+    '<span class="chip">▶️ YouTube</span>',
+    '',
+    'welcome YouTube chip');
+  fs.writeFileSync(wp, welcome);
 }
 
 // Prove the CWS staging tree ships no YouTube-download capability.

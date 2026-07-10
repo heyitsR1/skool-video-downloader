@@ -52,9 +52,8 @@
       <button id="yt-policy-back" class="link-back">← Back to videos</button>
       <div class="yt-policy">
         <div class="yt-policy__title">Heads up</div>
-        <p class="yt-policy__body">Chrome Web Store rules don't allow this extension to save videos from YouTube. Here are your options:</p>
-        <button id="yt-full-btn" class="upgrade-cta yt-policy__btn">Get the full version →</button>
-        <button id="yt-guide-btn" class="btn btn--outline yt-policy__btn">Read our guide →</button>
+        <p class="yt-policy__body">This version of the extension can't save YouTube videos. Our short guide (with a video walkthrough) shows you what to do — it takes about 2 minutes.</p>
+        <button id="yt-guide-btn" class="upgrade-cta yt-policy__btn">Watch the 2-minute guide →</button>
       </div>
     </div>
 
@@ -79,7 +78,28 @@
     </div>
 
     <div class="footer">
-      <span id="footer-version">v1.0.0</span> · <a href="https://tailsgate.com/skool-video-downloader" class="footer-link" target="_blank">Help</a>
+      <span id="footer-version">v1.0.0</span> · <a href="https://tailsgate.com/skool-video-downloader" class="footer-link" target="_blank">Help</a> · <button id="footer-report" class="footer-link footer-link--btn">🚩 Report a problem</button>
+    </div>
+  </div>
+
+  <!-- Problem report modal — nothing is sent until the user clicks Send -->
+  <div id="report-modal" class="modal hidden">
+    <div class="modal__backdrop" data-close-report></div>
+    <div class="modal__sheet">
+      <button class="modal__close" data-close-report aria-label="Close">&times;</button>
+      <h2 class="modal__title">Report a problem</h2>
+      <p class="modal__sub">Sends a small diagnostic snapshot (extension version, plan, what was detected on this page, recent errors) straight to the developer. No page content or personal data.</p>
+      <div id="report-context" class="report-context hidden"></div>
+      <div class="section">
+        <label class="label" for="report-note">What went wrong? <span class="label--muted">(optional)</span></label>
+        <textarea id="report-note" class="input input--area" maxlength="300" placeholder="e.g. The Loom video on this lesson never finishes downloading"></textarea>
+      </div>
+      <div class="section">
+        <label class="label" for="report-email">Email for a follow-up <span class="label--muted">(optional)</span></label>
+        <input type="email" id="report-email" class="input" placeholder="you@example.com">
+      </div>
+      <button id="report-send" class="btn btn--outline">Send report</button>
+      <div id="report-msg" class="msg"></div>
     </div>
   </div>
 

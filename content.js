@@ -38,12 +38,17 @@
     return m ? m[1] : null;
   }
 
-  function makeVideo(platform, sourceId, extra = {}) {
+  // `src` names the scanner that produced the detection (dom-iframe /
+  // dom-wistia / json-md / json-text). It rides into the background registry
+  // and the debug log, so a phantom detection is traceable to its origin from
+  // a single problem report.
+  function makeVideo(platform, sourceId, src, extra = {}) {
     return {
       key: `${platform}:${sourceId}`,
       platform,
       label: ({ loom: 'Loom', vimeo: 'Vimeo', youtube: 'YouTube', wistia: 'Wistia' })[platform] || platform,
       sourceId,
+      src,
       pageUrl: pageUrl(),
       ...extra
     };
@@ -56,15 +61,15 @@
       const src = f.src || f.getAttribute('data-src') || '';
       if (!src) return;
       let id;
-      if ((id = loomId(src))) found.push(makeVideo('loom', id));
-      else if ((id = vimeoId(src))) found.push(makeVideo('vimeo', id.id, { hParam: id.h }));
-      else if ((id = youtubeId(src))) found.push(makeVideo('youtube', id));
-      else if ((id = wistiaId(src))) found.push(makeVideo('wistia', id));
+      if ((id = loomId(src))) found.push(makeVideo('loom', id, 'dom-iframe'));
+      else if ((id = vimeoId(src))) found.push(makeVideo('vimeo', id.id, 'dom-iframe', { hParam: id.h }));
+      else if ((id = youtubeId(src))) found.push(makeVideo('youtube', id, 'dom-iframe'));
+      else if ((id = wistiaId(src))) found.push(makeVideo('wistia', id, 'dom-iframe'));
     });
     // Wistia's newer embed uses <div class="wistia_embed wistia_async_<id>">.
     document.querySelectorAll('[class*="wistia_async_"]').forEach(el => {
       const m = el.className.match(/wistia_async_([\w]{10,})/);
-      if (m) found.push(makeVideo('wistia', m[1]));
+      if (m) found.push(makeVideo('wistia', m[1], 'dom-wistia'));
     });
     return found;
   }
@@ -92,13 +97,13 @@
     return VIDEO_FIELD_CTX.test(text.slice(Math.max(0, index - 80), index));
   }
 
-  function classifyLink(url) {
+  function classifyLink(url, src) {
     let id;
-    if ((id = loomId(url))) return makeVideo('loom', id);
+    if ((id = loomId(url))) return makeVideo('loom', id, src);
     const v = vimeoId(url);
-    if (v) return makeVideo('vimeo', v.id, { hParam: v.h });
-    if ((id = youtubeId(url))) return makeVideo('youtube', id);
-    if ((id = wistiaId(url))) return makeVideo('wistia', id);
+    if (v) return makeVideo('vimeo', v.id, src, { hParam: v.h });
+    if ((id = youtubeId(url))) return makeVideo('youtube', id, src);
+    if ((id = wistiaId(url))) return makeVideo('wistia', id, src);
     return null;
   }
 
@@ -141,7 +146,7 @@
       // Classroom page: classify only the on-screen lesson's own videoLink.
       const current = md ? lessons.find(l => l.id === md) : null;
       if (current && current.videoLink) {
-        const v = classifyLink(current.videoLink);
+        const v = classifyLink(current.videoLink, 'json-md');
         if (v) found.push(v);
       }
       const isCourseData = lessons.some(l => l.videoLink);
@@ -175,10 +180,10 @@
         if (nearVideoField(text, m.index)) found.push(make(m[1]));
       }
     };
-    gated(/loom\.com\\?\/(?:share|embed)\\?\/([0-9a-f]{20,})/gi, id => makeVideo('loom', id));
-    gated(/(?:player\.)?vimeo\.com\\?\/(?:video\\?\/)?(\d{6,})/g, id => makeVideo('vimeo', id));
-    gated(/youtu(?:be(?:-nocookie)?\.com\\?\/(?:embed\\?\/|watch\?v=)|\.be\\?\/)([\w-]{11})/g, id => makeVideo('youtube', id));
-    gated(/wistia\.(?:com|net)\\?\/(?:medias|embed\\?\/(?:iframe|medias))\\?\/([\w]{10,})/g, id => makeVideo('wistia', id));
+    gated(/loom\.com\\?\/(?:share|embed)\\?\/([0-9a-f]{20,})/gi, id => makeVideo('loom', id, 'json-text'));
+    gated(/(?:player\.)?vimeo\.com\\?\/(?:video\\?\/)?(\d{6,})/g, id => makeVideo('vimeo', id, 'json-text'));
+    gated(/youtu(?:be(?:-nocookie)?\.com\\?\/(?:embed\\?\/|watch\?v=)|\.be\\?\/)([\w-]{11})/g, id => makeVideo('youtube', id, 'json-text'));
+    gated(/wistia\.(?:com|net)\\?\/(?:medias|embed\\?\/(?:iframe|medias))\\?\/([\w]{10,})/g, id => makeVideo('wistia', id, 'json-text'));
     return found;
   }
 
@@ -196,7 +201,7 @@
   }
 
   // Fresh full page load — clear the previous page's captured videos, then scan.
-  chrome.runtime.sendMessage({ type: 'CLEAR_TAB' }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'CLEAR_TAB', reason: 'page-load', path: location.pathname + location.search }).catch(() => {});
 
   // Initial scan + a few retries (players hydrate late), then observe SPA changes.
   scan();
@@ -206,12 +211,19 @@
   const mo = new MutationObserver(() => { clearTimeout(mo._t); mo._t = setTimeout(scan, 600); });
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
-  // SPA route change — Skool swaps lessons without a full load. Reset the seen
-  // set so the new lesson's embeds are reported.
+  // SPA route change — Skool swaps lessons without a full load. Clear BOTH the
+  // local seen set AND the background registry: without the registry clear, a
+  // sibling lesson's video (e.g. a Loom detected two lessons ago) stays listed
+  // in the popup on every later lesson — the "phantom Loom" bug.
   let lastPath = location.pathname + location.search;
   setInterval(() => {
     const now = location.pathname + location.search;
-    if (now !== lastPath) { lastPath = now; seen.clear(); scan(); }
+    if (now !== lastPath) {
+      lastPath = now;
+      seen.clear();
+      chrome.runtime.sendMessage({ type: 'CLEAR_TAB', reason: 'spa-nav', path: now }).catch(() => {});
+      scan();
+    }
   }, 800);
 
   // ── Page context for the popup (title + preview frame) ────────────────────

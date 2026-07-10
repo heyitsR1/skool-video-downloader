@@ -10,6 +10,29 @@ importScripts('detectors.js');
 
 const WORKER_URL = 'https://skool-dl-license.aarohan567.workers.dev';
 
+// Problem reports go to the shared tailsgate reports Worker (the same one the
+// Whop downloader uses), tagged with a product field so they land in one admin
+// dashboard. Primary is the tailsgate.com proxy (some ISPs/antivirus block
+// *.workers.dev); the workers.dev URL is the fallback.
+const REPORT_API_BASES = [
+  'https://tailsgate.com/api/license',
+  'https://whop-dl-license.aarohan567.workers.dev'
+];
+
+// ── Debug log ─────────────────────────────────────────────────────────────────
+// Tiny rolling log of high-signal events (detections with their source scanner,
+// registry clears, resolve/download failures). Deliberately sparse — it exists
+// to make one-click problem reports diagnosable, not to trace every action.
+// Persisted in storage.local so it survives service-worker restarts.
+const DEBUG_LOG_MAX = 40;
+async function svdLog(context, message) {
+  try {
+    const { debugLog = [] } = await chrome.storage.local.get('debugLog');
+    debugLog.push({ ts: new Date().toISOString(), context, message: String(message).slice(0, 300) });
+    await chrome.storage.local.set({ debugLog: debugLog.slice(-DEBUG_LOG_MAX) });
+  } catch { /* logging must never break anything */ }
+}
+
 // tabId -> { videos: Map(key -> videoEntry) }  captured streams / embeds per tab
 const tabVideos = new Map();
 
@@ -39,6 +62,10 @@ function addVideo(tabId, entry) {
   const t = ensureTab(tabId);
   if (!t.videos.has(entry.key)) {
     t.videos.set(entry.key, { ...entry, tabId, ts: Date.now() });
+    // src names the scanner that produced the detection (dom-iframe/json-md/
+    // json-text from the content script, wire for webRequest captures) — the
+    // first thing to look at when a report says a phantom video was listed.
+    svdLog('detect', `+${entry.platform} via ${entry.src || 'wire'} (${entry.key.slice(0, 80)})`);
   } else {
     // Merge — a later webRequest capture may carry headers a page-props entry lacked.
     Object.assign(t.videos.get(entry.key), entry);
@@ -100,7 +127,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-function clearTab(tabId) { if (tabId) tabVideos.delete(tabId); }
+function clearTab(tabId, reason, path) {
+  if (!tabId) return;
+  const had = tabVideos.get(tabId)?.videos.size || 0;
+  tabVideos.delete(tabId);
+  if (had) svdLog('clear', `${reason || 'clear'} dropped ${had} video(s) → ${String(path || '').slice(0, 120)}`);
+}
 
 // ── Keep-alive + license revalidation ─────────────────────────────────────────
 chrome.alarms.create('keepAlive', { periodInMinutes: 0.4 });
@@ -209,6 +241,46 @@ async function revalidateLicenseIfStale() {
     if (!result.valid) await chrome.storage.local.remove(['licenseKey', 'tier', 'licenseValidatedAt']);
     else await chrome.storage.local.set({ licenseValidatedAt: Date.now() });
   } catch {}
+}
+
+// ── Problem reports ───────────────────────────────────────────────────────────
+// Collect diagnostics (version, tier, currently detected videos with their
+// scanner source, recent debug log) and POST them to the shared reports Worker.
+// Always returns the payload too, so the popup can fall back to copy-for-email
+// when the network path is blocked.
+async function sendErrorReport(note, email, tabId) {
+  const { debugLog = [] } = await chrome.storage.local.get('debugLog');
+  const [license, installId] = await Promise.all([
+    getLicenseStatus().catch(() => null),
+    getInstallId().catch(() => undefined),
+  ]);
+  const detected = listVideos(tabId)
+    .map(v => `${v.platform}/${v.src || 'wire'}${v.title ? `:${v.title.slice(0, 40)}` : ''}`)
+    .slice(0, 8);
+  const payload = {
+    product: 'skool-video-downloader',
+    note: typeof note === 'string' ? note.slice(0, 500) : undefined,
+    email: typeof email === 'string' && email.includes('@') ? email.slice(0, 120) : undefined,
+    version: chrome.runtime.getManifest().version,
+    ua: navigator.userAgent,
+    tier: license?.tier || 'free',
+    detected: detected.length ? detected.join(', ').slice(0, 300) : 'none',
+    installId,
+    log: debugLog.slice(-10),
+  };
+  for (const base of REPORT_API_BASES) {
+    try {
+      const res = await fetch(`${base}/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) continue;
+      const data = await res.json().catch(() => null);
+      if (data?.ok) return { ok: true, payload };
+    } catch { /* try next base */ }
+  }
+  return { ok: false, payload };
 }
 
 // ── Offscreen ffmpeg.wasm merge engine ────────────────────────────────────────
@@ -567,6 +639,7 @@ async function runJob({ jobId, quality, filename, tabId }) {
       broadcast({ type: 'QUEUE_CANCELLED', jobId });
     } else {
       meta.phase = 'error'; meta.error = e.message;
+      svdLog('download', `${quality.platform || 'video'} "${String(filename).slice(0, 60)}": ${e.message}`);
       recordFinished(meta, 'error');
       updateJob(jobId, { phase: 'error', error: e.message });
       broadcast({ type: 'QUEUE_ERROR', jobId, error: e.message });
@@ -591,9 +664,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   switch (req.type) {
     case 'CLEAR_TAB':
-      // Content script signals a fresh full page load — drop the prior page's
-      // captured videos so stale entries don't linger across navigations.
-      clearTab(tabId);
+      // Content script signals a fresh full page load OR an SPA route change —
+      // drop the prior page's captured videos so stale entries don't linger
+      // across lesson navigation (the "phantom sibling-lesson video" bug).
+      clearTab(tabId, req.reason, req.path);
       sendResponse({ ok: true });
       return true;
 
@@ -650,6 +724,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           });
           sendResponse({ ok: true, qualities, title: video.title });
         } catch (e) {
+          svdLog('resolve', `${video.platform}: ${e.message}`);
           sendResponse({ ok: false, error: e.message });
         } finally {
           if (ruleId != null) await removeHeaderRules(ruleId);
@@ -683,6 +758,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
     case 'ACTIVATE_LICENSE':
       activateLicense(req.licenseKey).then(sendResponse);
+      return true;
+
+    case 'REPORT_PROBLEM':
+      sendErrorReport(req.note, req.email, tabId).then(sendResponse);
       return true;
   }
   return true;

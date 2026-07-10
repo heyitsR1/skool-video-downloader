@@ -22,11 +22,10 @@ const PLATFORM_ICON = {
 // Build flag (buildConfig.js). Fails closed to the Chrome Web Store behaviour if
 // the config is somehow absent.
 const YT_DOWNLOAD_ENABLED = !!(self.SVD_CONFIG && self.SVD_CONFIG.YT_DOWNLOAD_ENABLED);
-// Destinations for the CWS-build YouTube policy notice. The extension links only
-// to our own repo and our own guide page (the guide is the single off-extension
-// place that points onward), keeping the store listing itself clean.
-const YT_FULL_VERSION_URL = 'https://github.com/heyitsR1/skool-video-downloader';
-const YT_GUIDE_URL = 'https://tailsgate.ai/skool-video-downloader/youtube';
+// Destination for the CWS-build YouTube policy notice. The extension links only
+// to our own guide page — the guide (video walkthrough + steps) is the single
+// off-extension place that points onward, keeping the shipped artifact clean.
+const YT_GUIDE_URL = 'https://tailsgate.com/skool-video-downloader/youtube';
 
 let activeTab = null;
 let currentVideos = [];
@@ -41,8 +40,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('quality-back').addEventListener('click', showVideoList);
   document.getElementById('upgrade-btn').addEventListener('click', () => openPricingModal());
   document.getElementById('yt-policy-back').addEventListener('click', showVideoList);
-  document.getElementById('yt-full-btn').addEventListener('click', () => chrome.tabs.create({ url: YT_FULL_VERSION_URL }));
   document.getElementById('yt-guide-btn').addEventListener('click', () => chrome.tabs.create({ url: YT_GUIDE_URL }));
+  initReportModal();
 
   [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -220,8 +219,7 @@ async function openQuality(video) {
   if (!res?.ok) {
     titleEl.textContent = video.title || video.label || video.platform;
     listEl.innerHTML = '';
-    errEl.textContent = res?.error || 'Could not resolve this video.';
-    errEl.classList.remove('hidden');
+    showError(errEl, res?.error || 'Could not resolve this video.');
     return;
   }
 
@@ -254,8 +252,7 @@ async function startDownload(quality, filename, video) {
     if (res?.reason === 'weekly_limit') {
       openPricingModal('You\'ve used your 3 free downloads this week — go unlimited to keep saving.');
     } else {
-      errEl.textContent = 'Could not start the download. Try again.';
-      errEl.classList.remove('hidden');
+      showError(errEl, 'Could not start the download. Try again.');
     }
     return;
   }
@@ -303,12 +300,14 @@ function managerRow(item) {
     `<div class="dl-row__foot">` +
       `<span class="dl-row__speed">${item.speed || ''}</span>` +
       (item.state === 'done' ? `<span class="dl-row__done">✓ Saved</span>`
-        : item.state === 'error' || item.phase === 'error' ? `<span class="dl-row__err">Failed</span>`
+        : item.state === 'error' || item.phase === 'error' ? `<span class="dl-row__err">Failed</span> <button class="dl-row__report" data-report>🚩 Report</button>`
         : item.state === 'cancelled' ? `<span class="dl-row__err">Cancelled</span>`
         : `<button class="dl-row__cancel" data-cancel="${item.jobId}">Cancel</button>`) +
     `</div>`;
   const cancel = row.querySelector('[data-cancel]');
   if (cancel) cancel.addEventListener('click', () => send({ type: 'CANCEL_JOB', jobId: item.jobId }));
+  const report = row.querySelector('[data-report]');
+  if (report) report.addEventListener('click', () => openReportModal(item.error || `Download failed: ${name}`));
   return row;
 }
 
@@ -389,6 +388,89 @@ function setupLicenseActivation() {
       msg.textContent = 'Invalid or expired license key.'; msg.className = 'msg msg--error';
       btn.disabled = false; btn.textContent = 'Activate license';
     }
+  });
+}
+
+// ── Problem reporting ─────────────────────────────────────────────────────────
+// One-click error reports, mirroring the Whop downloader: the error box grows a
+// "Report this error" button, the footer has a standing "Report a problem"
+// link, and nothing is sent until the user reviews the consent modal and hits
+// Send. The background collects diagnostics and POSTs to the reports Worker;
+// if that's blocked, the payload is copied for a support email instead.
+let reportErrorContext = null;
+
+// Render an inline error with a report button attached.
+function showError(errEl, message) {
+  errEl.innerHTML = '';
+  const text = document.createElement('span');
+  text.textContent = message;
+  const btn = document.createElement('button');
+  btn.className = 'msg__report';
+  btn.textContent = '🚩 Report this error';
+  btn.addEventListener('click', () => openReportModal(message));
+  errEl.append(text, btn);
+  errEl.classList.remove('hidden');
+}
+
+function openReportModal(errorText) {
+  reportErrorContext = errorText || null;
+  const modal = document.getElementById('report-modal');
+  const ctx = document.getElementById('report-context');
+  if (errorText) {
+    ctx.textContent = 'Error being reported: ' + errorText;
+    ctx.classList.remove('hidden');
+  } else {
+    ctx.classList.add('hidden');
+  }
+  document.getElementById('report-msg').textContent = '';
+  const sendBtn = document.getElementById('report-send');
+  sendBtn.disabled = false;
+  sendBtn.textContent = 'Send report';
+  // Prefill the email from the last report so repeat reporters type it once.
+  chrome.storage.local.get('reportEmail').then(({ reportEmail }) => {
+    if (reportEmail && !document.getElementById('report-email').value) {
+      document.getElementById('report-email').value = reportEmail;
+    }
+  });
+  modal.classList.remove('hidden');
+}
+
+function initReportModal() {
+  const modal = document.getElementById('report-modal');
+  modal.querySelectorAll('[data-close-report]').forEach((el) =>
+    el.addEventListener('click', () => modal.classList.add('hidden')));
+  document.getElementById('footer-report').addEventListener('click', () => openReportModal());
+
+  document.getElementById('report-send').addEventListener('click', async () => {
+    const sendBtn = document.getElementById('report-send');
+    const msg = document.getElementById('report-msg');
+    const email = document.getElementById('report-email').value.trim().slice(0, 120);
+    const userNote = document.getElementById('report-note').value.trim().slice(0, 300);
+    const note = [reportErrorContext, userNote].filter(Boolean).join(' — ') || 'no details given';
+
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending…';
+    if (email) chrome.storage.local.set({ reportEmail: email }).catch(() => {});
+
+    const res = await send({ type: 'REPORT_PROBLEM', tabId: activeTab?.id, note, email });
+    if (res?.ok) {
+      sendBtn.textContent = '✓ Sent — thank you!';
+      msg.textContent = email ? "We'll email you when it's fixed." : '';
+      msg.className = 'msg msg--success';
+      setTimeout(() => modal.classList.add('hidden'), 1800);
+      return;
+    }
+    sendBtn.textContent = 'Send report';
+    sendBtn.disabled = false;
+    try {
+      await navigator.clipboard.writeText(
+        'Skool Video Downloader problem report\n' + JSON.stringify(res?.payload ?? {}, null, 2)
+      );
+      msg.textContent = "Couldn't reach our server — report copied to your clipboard. Please paste it into an email to support@tailsgate.com.";
+    } catch {
+      msg.textContent = "Couldn't reach our server — please email support@tailsgate.com.";
+    }
+    msg.className = 'msg msg--error';
   });
 }
 
