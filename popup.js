@@ -3,14 +3,15 @@
 // resolution → enqueue. A live download-manager panel renders queue state from
 // background QUEUE_* broadcasts (progress, speed, cancel).
 
-// Freemius checkout — Skool Video Downloader (product 33457, pricing 72637).
-// MV3 popup CSP forbids loading Freemius's checkout.min.js, so — like the Whop
-// downloader — we open the hosted popup-mode checkout URL directly. One pricing
-// object carries all three cycles ($9.99/mo, $49.99/yr, $79.99 lifetime);
-// billing_cycle preselects which the checkout opens on.
+// Freemius checkout — Skool Video Downloader (product 33457, plan 54961,
+// pricing 72637). MV3 popup CSP forbids loading Freemius's checkout.min.js,
+// so — like the Whop downloader — we open the hosted popup-mode checkout URL
+// directly. The /plan/ segment takes the plan id (not the pricing id); one
+// pricing object under that plan carries all three cycles ($9.99/mo,
+// $49.99/yr, $79.99 lifetime) and billing_cycle preselects which it opens on.
 const FS_PRODUCT_ID = 33457;
-const FS_PRICING_ID = 72637;
-const CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PRICING_ID}/`;
+const FS_PLAN_ID = 54961;
+const CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PLAN_ID}/`;
 const CHECKOUT_MONTHLY = `${CHECKOUT}?billing_cycle=monthly`;
 const CHECKOUT_ANNUAL = `${CHECKOUT}?billing_cycle=annual`;
 const CHECKOUT_LIFETIME = `${CHECKOUT}?billing_cycle=lifetime`;
