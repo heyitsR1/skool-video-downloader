@@ -51,6 +51,9 @@ function writeFlag(dir, enabled) {
   const p = path.join(dir, 'buildConfig.js');
   let t = fs.readFileSync(p, 'utf8');
   t = mustReplace(t, 'YT_DOWNLOAD_ENABLED: true', `YT_DOWNLOAD_ENABLED: ${enabled}`, 'YT_DOWNLOAD_ENABLED flag');
+  if (!enabled) {
+    t = mustReplace(t, "CHANNEL: 'full'", "CHANNEL: 'cws'", 'CHANNEL flag');
+  }
   fs.writeFileSync(p, t);
 }
 

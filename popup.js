@@ -48,6 +48,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await initLicenseUI();
   await refreshVideos();
   await refreshQueue();
+  initUpdateBanner(); // async, non-blocking — banner pops in if an update exists
 
   // Nudge the content script to rescan (covers already-open lessons).
   if (activeTab?.id) chrome.tabs.sendMessage(activeTab.id, { type: 'RESCAN' }).catch(() => {});
@@ -389,6 +390,28 @@ function setupLicenseActivation() {
       btn.disabled = false; btn.textContent = 'Activate license';
     }
   });
+}
+
+// ── Update banner ─────────────────────────────────────────────────────────────
+// Shown only when this build's channel (cws vs full) is behind its own latest
+// version. Dismissing remembers the version, so the banner stays gone until the
+// NEXT release — informative once, never nagging.
+async function initUpdateBanner() {
+  const status = await send({ type: 'GET_VERSION_STATUS' });
+  if (!status?.updateAvailable) return;
+  const { dismissedUpdateVersion } = await chrome.storage.local.get('dismissedUpdateVersion');
+  if (dismissedUpdateVersion === status.latest) return;
+
+  const banner = document.getElementById('update-banner');
+  document.getElementById('update-banner-text').textContent =
+    status.message || `v${status.latest} is out — you're on v${status.current}`;
+  document.getElementById('update-open').addEventListener('click', () =>
+    chrome.tabs.create({ url: status.url }));
+  document.getElementById('update-dismiss').addEventListener('click', () => {
+    chrome.storage.local.set({ dismissedUpdateVersion: status.latest }).catch(() => {});
+    banner.classList.add('hidden');
+  });
+  banner.classList.remove('hidden');
 }
 
 // ── Problem reporting ─────────────────────────────────────────────────────────

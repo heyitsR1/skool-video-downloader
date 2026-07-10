@@ -10,4 +10,8 @@
 // Committed value is `true` (the repo IS the full/GitHub build). The popup reads
 // this via `self.SVD_CONFIG` and fails closed to the CWS-safe behaviour if the
 // flag is ever missing.
-self.SVD_CONFIG = { YT_DOWNLOAD_ENABLED: true };
+//
+// CHANNEL names the distribution ('full' = GitHub sideload, 'cws' = Chrome Web
+// Store) so the update check compares against the right latest version — the
+// two channels ship on different schedules (CWS review lag).
+self.SVD_CONFIG = { YT_DOWNLOAD_ENABLED: true, CHANNEL: 'full' };

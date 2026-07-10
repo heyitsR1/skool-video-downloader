@@ -16,6 +16,15 @@
       <span id="tier-badge" class="badge badge--free">Free</span>
     </div>
 
+    <!-- Update banner (hidden unless this channel is behind; dismiss per version) -->
+    <div id="update-banner" class="update-banner hidden">
+      <button id="update-open" class="update-banner__body">
+        <span id="update-banner-text">A new version is available</span>
+        <span class="update-banner__go">Update →</span>
+      </button>
+      <button id="update-dismiss" class="update-banner__x" aria-label="Dismiss">&times;</button>
+    </div>
+
     <!-- Trial / plan bar -->
     <div id="credits-row" class="credits-row">
       <span id="credits-text" class="credits-text">Loading…</span>

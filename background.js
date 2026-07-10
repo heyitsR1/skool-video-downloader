@@ -6,7 +6,7 @@
 // Next.js props. The popup resolves qualities on demand, then hands a download
 // job to the concurrent queue here, which fetches + remuxes to MP4 in-browser.
 
-importScripts('detectors.js');
+importScripts('detectors.js', 'buildConfig.js');
 
 const WORKER_URL = 'https://skool-dl-license.aarohan567.workers.dev';
 
@@ -139,7 +139,10 @@ chrome.alarms.create('keepAlive', { periodInMinutes: 0.4 });
 chrome.alarms.create('revalidate', { periodInMinutes: 60 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === 'keepAlive') chrome.runtime.getPlatformInfo();
-  if (a.name === 'revalidate') revalidateLicenseIfStale();
+  if (a.name === 'revalidate') {
+    revalidateLicenseIfStale();
+    getVersionStatus().catch(() => {}); // self-throttles to every 12h
+  }
 });
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -241,6 +244,54 @@ async function revalidateLicenseIfStale() {
     if (!result.valid) await chrome.storage.local.remove(['licenseKey', 'tier', 'licenseValidatedAt']);
     else await chrome.storage.local.set({ licenseValidatedAt: Date.now() });
   } catch {}
+}
+
+// ── Update check ──────────────────────────────────────────────────────────────
+// Anonymous GET (no install id, no identifiers) against the shared Worker's
+// /version endpoint, at most every 12h. The popup shows a slim dismissible
+// banner when THIS distribution channel (cws vs full/GitHub) is behind — the
+// two channels ship on different schedules, so each compares to its own latest.
+const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+// Numeric dotted-version compare: >0 when a is newer than b.
+function cmpVersions(a, b) {
+  const pa = String(a).split('.'), pb = String(b).split('.');
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (parseInt(pa[i], 10) || 0) - (parseInt(pb[i], 10) || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+async function getVersionStatus() {
+  const channel = (self.SVD_CONFIG && self.SVD_CONFIG.CHANNEL) === 'full' ? 'full' : 'cws';
+  const current = chrome.runtime.getManifest().version;
+  let { versionInfo, versionCheckedAt } = await chrome.storage.local.get(['versionInfo', 'versionCheckedAt']);
+
+  if (!versionInfo || Date.now() - (versionCheckedAt || 0) > VERSION_CHECK_INTERVAL_MS) {
+    for (const base of REPORT_API_BASES) {
+      try {
+        const res = await fetch(`${base}/version?product=skool-video-downloader`, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const info = await res.json();
+        if (info && (info.latestCws || info.latestFull)) {
+          versionInfo = info;
+          await chrome.storage.local.set({ versionInfo: info, versionCheckedAt: Date.now() });
+        }
+        break;
+      } catch { /* try next base; a failed check just means no banner */ }
+    }
+  }
+
+  const latest = versionInfo ? (channel === 'full' ? versionInfo.latestFull : versionInfo.latestCws) : null;
+  return {
+    current,
+    channel,
+    latest: latest || null,
+    updateAvailable: !!(latest && cmpVersions(latest, current) > 0),
+    url: versionInfo?.url || 'https://tailsgate.com/skool-video-downloader/updates',
+    message: versionInfo?.message || null
+  };
 }
 
 // ── Problem reports ───────────────────────────────────────────────────────────
@@ -762,6 +813,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
     case 'REPORT_PROBLEM':
       sendErrorReport(req.note, req.email, tabId).then(sendResponse);
+      return true;
+
+    case 'GET_VERSION_STATUS':
+      getVersionStatus().then(sendResponse).catch(() => sendResponse(null));
       return true;
   }
   return true;
