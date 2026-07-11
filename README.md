@@ -36,4 +36,4 @@ node scripts/build.mjs   # → dist/*.zip
 
 ## Support
 
-Questions or issues → https://tailsgate.ai/skool-video-downloader
+Questions or issues → https://tailsgate.com/skool-video-downloader
