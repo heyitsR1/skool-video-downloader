@@ -163,8 +163,8 @@ async function purgeBlobCache() { try { await caches.delete('video-blobs'); } ca
   } catch {}
 })();
 
-// ── Licensing (3 free downloads per rolling 7-day window, then Pro) ────────────
-const FREE_WEEKLY_LIMIT = 3;
+// ── Licensing (5 free downloads per rolling 7-day window, then Pro) ────────────
+const FREE_WEEKLY_LIMIT = 5;
 
 // Returns an ISO date (YYYY-MM-DD) `days` days from today.
 function dateInDays(days) {
@@ -185,7 +185,7 @@ async function canDownload() {
   const { tier, freeWeeklyCount, freeWeekResetDate } = await chrome.storage.local.get(['tier', 'freeWeeklyCount', 'freeWeekResetDate']);
   if (tier === 'lifetime' || tier === 'monthly') return { allowed: true, remaining: 'unlimited', tier };
 
-  // Free tier — 3 downloads per rolling 7-day window (reset when the window elapses).
+  // Free tier — 5 downloads per rolling 7-day window (reset when the window elapses).
   const today = new Date().toISOString().slice(0, 10);
   let count = freeWeeklyCount || 0;
   if (!freeWeekResetDate || today >= freeWeekResetDate) {

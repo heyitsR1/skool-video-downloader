@@ -20,16 +20,16 @@ const PLATFORM_ICON = {
   skool: '🎓', loom: '🔴', vimeo: '🎬', youtube: '▶️', wistia: '🟢', hls: '🎞️'
 };
 
-// Build flag (buildConfig.js). Fails closed to the Chrome Web Store behaviour if
-// the config is somehow absent.
-const YT_DOWNLOAD_ENABLED = !!(self.SVD_CONFIG && self.SVD_CONFIG.YT_DOWNLOAD_ENABLED);
-// Destination for the CWS-build YouTube policy notice. The extension links only
-// to our own guide page — the guide (video walkthrough + steps) is the single
-// off-extension place that points onward, keeping the shipped artifact clean.
+// Destination for the YouTube handoff (both builds — YouTube's server-side
+// gating cuts extension-initiated streams off after a few hundred KB, so
+// in-browser YouTube downloads are dead for every extension). The guide page
+// reads ?v= and pre-fills a copy-paste yt-dlp command for that exact video.
+// The extension links only to our own page, keeping the shipped artifact clean.
 const YT_GUIDE_URL = 'https://tailsgate.com/skool-video-downloader/youtube';
 
 let activeTab = null;
 let currentVideos = [];
+let ytGuideVideoId = null; // sourceId of the YouTube video behind the handoff view
 const jobLabels = new Map(); // jobId -> filename (for manager rows)
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -41,7 +41,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('quality-back').addEventListener('click', showVideoList);
   document.getElementById('upgrade-btn').addEventListener('click', () => openPricingModal());
   document.getElementById('yt-policy-back').addEventListener('click', showVideoList);
-  document.getElementById('yt-guide-btn').addEventListener('click', () => chrome.tabs.create({ url: YT_GUIDE_URL }));
+  document.getElementById('yt-guide-btn').addEventListener('click', () => {
+    const url = ytGuideVideoId ? `${YT_GUIDE_URL}?v=${encodeURIComponent(ytGuideVideoId)}` : YT_GUIDE_URL;
+    chrome.tabs.create({ url });
+  });
   initReportModal();
 
   [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -179,9 +182,11 @@ function attachThumb(tile, src) {
   tile.appendChild(img);
 }
 
-// Chrome Web Store build cannot download YouTube; show the policy notice with
-// off-store options instead of resolving qualities.
-function showYouTubePolicy() {
+// YouTube's server-side gating breaks in-browser downloads in both builds;
+// show the handoff notice (guide page + pre-filled command) instead of
+// resolving qualities.
+function showYouTubePolicy(video) {
+  ytGuideVideoId = video?.sourceId || null;
   document.getElementById('videos').classList.add('hidden');
   document.getElementById('status-text').classList.add('hidden');
   document.getElementById('hint-text').classList.add('hidden');
@@ -198,7 +203,7 @@ function showVideoList() {
 
 // ── Quality picker ────────────────────────────────────────────────────────────
 async function openQuality(video) {
-  if (!YT_DOWNLOAD_ENABLED && video.platform === 'youtube') { showYouTubePolicy(); return; }
+  if (video.platform === 'youtube') { showYouTubePolicy(video); return; }
   document.getElementById('videos').classList.add('hidden');
   document.getElementById('status-text').classList.add('hidden');
   document.getElementById('hint-text').classList.add('hidden');
@@ -252,7 +257,7 @@ async function startDownload(quality, filename, video) {
   const res = await send({ type: 'START_DOWNLOAD', tabId: activeTab?.id, quality, filename, label: video.label });
   if (!res?.ok) {
     if (res?.reason === 'weekly_limit') {
-      openPricingModal('You\'ve used your 3 free downloads this week — go unlimited to keep saving.');
+      openPricingModal('You\'ve used your 5 free downloads this week — go unlimited to keep saving.');
     } else {
       showError(errEl, 'Could not start the download. Try again.');
     }
