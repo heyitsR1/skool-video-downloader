@@ -163,21 +163,52 @@ async function resolveLoomQualities(sourceId) {
 // Innertube player API with a non-web client returns un-ciphered stream URLs.
 // Progressive formats (video+audio muxed, ≤720p) download directly; adaptive
 // pairs (1080p+) are fetched separately and remuxed in-browser.
-// Client choice matters: most clients (web, android, ios) now demand a PO token
-// for playable stream URLs and 403 without one. ANDROID_VR is currently the
-// only client that hands back un-ciphered URLs with no PO token and no JS
-// player challenge (versions/ids mirror yt-dlp's INNERTUBE_CLIENTS).
+// Client choice matters: most clients (web, android) now demand a PO token for
+// playable stream URLs. IOS still hands back un-ciphered, PO-token-free URLs;
+// ANDROID_VR is kept as a fallback but is bot-checked ("sign in to confirm")
+// from many IPs as of 2026-07 (versions/ids mirror yt-dlp's INNERTUBE_CLIENTS).
+// The player POST must NOT carry Chrome's automatic
+// "Origin: chrome-extension://…" header — Google's edge hard-403s it (the
+// "Sorry…" anti-abuse page) before Innertube ever sees the request. fetch()
+// can't unset Origin (forbidden header), so a temporary DNR session rule
+// scoped to this extension's own player-API requests strips it.
 // >>> SVD_YT_BLOCK_START — Innertube YouTube resolver.
 // The build script (scripts/build.mjs) replaces everything from this marker up to
 // SVD_YT_BLOCK_END with a stub in the Chrome Web Store build, so that artifact
 // ships no YouTube-download code and no youtubei/googlevideo references.
 const YT_PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
 const YT_CLIENTS = [
-  { clientId: 28, clientName: 'ANDROID_VR', clientVersion: '1.65.10', deviceMake: 'Oculus', deviceModel: 'Quest 3', androidSdkVersion: 32, osName: 'Android', osVersion: '12L', userAgent: 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip' },
-  { clientId: 5, clientName: 'IOS', clientVersion: '21.02.3', deviceMake: 'Apple', deviceModel: 'iPhone16,2', osName: 'iPhone', osVersion: '18.5.0.22F76', userAgent: 'com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iOS 18_5 like Mac OS X;)' }
+  { clientId: 5, clientName: 'IOS', clientVersion: '21.02.3', deviceMake: 'Apple', deviceModel: 'iPhone16,2', osName: 'iPhone', osVersion: '18.5.0.22F76', userAgent: 'com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iOS 18_5 like Mac OS X;)' },
+  { clientId: 28, clientName: 'ANDROID_VR', clientVersion: '1.65.10', deviceMake: 'Oculus', deviceModel: 'Quest 3', androidSdkVersion: 32, osName: 'Android', osVersion: '12L', userAgent: 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip' }
 ];
 
+// Session (not dynamic) rule: never persisted, so a crash mid-resolve can't
+// leave a stale header rule behind after browser restart.
+const YT_ORIGIN_RULE_ID = 990001;
+async function withoutExtensionOrigin(fn) {
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [YT_ORIGIN_RULE_ID],
+      addRules: [{
+        id: YT_ORIGIN_RULE_ID,
+        priority: 1,
+        action: { type: 'modifyHeaders', requestHeaders: [{ header: 'Origin', operation: 'remove' }] },
+        condition: { urlFilter: '||youtube.com/youtubei/', resourceTypes: ['xmlhttprequest', 'other'], initiatorDomains: [chrome.runtime.id] }
+      }]
+    });
+  } catch { /* rule install failed — attempt the fetch anyway */ }
+  try {
+    return await fn();
+  } finally {
+    chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [YT_ORIGIN_RULE_ID] }).catch(() => {});
+  }
+}
+
 async function ytPlayerResponse(videoId) {
+  return withoutExtensionOrigin(() => ytPlayerResponseInner(videoId));
+}
+
+async function ytPlayerResponseInner(videoId) {
   let lastErr = 'unavailable';
   for (const client of YT_CLIENTS) {
     try {
