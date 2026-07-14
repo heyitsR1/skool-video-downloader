@@ -409,9 +409,15 @@ async function removeHeaderRules(ruleId) {
 }
 
 // ── HLS rendition download ────────────────────────────────────────────────────
-function resolvePlaylistUrl(url, baseUrl) {
-  if (url.startsWith('http')) return url;
-  return url.startsWith('/') ? new URL(baseUrl).origin + url : new URL(url, baseUrl).href;
+function resolvePlaylistUrl(url, baseUrl, parentQuery) {
+  const abs = url.startsWith('http')
+    ? url
+    : (url.startsWith('/') ? new URL(baseUrl).origin + url : new URL(url, baseUrl).href);
+  // CDN-signed HLS (Loom) keeps the CloudFront signature as a query string on
+  // the playlist URL; relative segment/map URIs inherit it. Only apply it to
+  // children with no query of their own (Mux/Skool segments carry own tokens).
+  if (parentQuery && !abs.includes('?')) return `${abs}?${parentQuery}`;
+  return abs;
 }
 
 async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType }) {
@@ -419,11 +425,12 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   if (!res.ok) throw new Error(`Playlist fetch failed: ${res.status}`);
   const text = await res.text();
   const baseUrl = playlistUrl.substring(0, playlistUrl.lastIndexOf('/') + 1);
+  const parentQuery = (playlistUrl.split('?')[1] || '');
 
   const blobs = [];
   const mapMatch = text.match(/#EXT-X-MAP:URI="([^"]+)"/);
   if (mapMatch) {
-    const r = await fetch(resolvePlaylistUrl(mapMatch[1], baseUrl));
+    const r = await fetch(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery));
     if (!r.ok) throw new Error(`Init segment fetch failed: ${r.status}`);
     blobs.push(await r.blob());
   }
@@ -431,7 +438,7 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   const segments = [];
   for (let line of text.split('\n')) {
     line = line.trim();
-    if (line && !line.startsWith('#')) segments.push(resolvePlaylistUrl(line, baseUrl));
+    if (line && !line.startsWith('#')) segments.push(resolvePlaylistUrl(line, baseUrl, parentQuery));
   }
   if (!segments.length) throw new Error('No segments in playlist');
 
