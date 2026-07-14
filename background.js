@@ -232,7 +232,14 @@ async function activateLicense(licenseKey) {
 
 async function revalidateLicenseIfStale() {
   const { licenseKey, tier, licenseValidatedAt } = await chrome.storage.local.get(['licenseKey', 'tier', 'licenseValidatedAt']);
-  if (!licenseKey || !tier) return;
+  // A paid tier with no license key never came from activateLicense — it was
+  // hand-set in storage. Drop it so a paid tier only persists alongside a key
+  // that keeps passing server revalidation.
+  if (!licenseKey) {
+    if (tier === 'lifetime' || tier === 'monthly') await chrome.storage.local.remove(['tier', 'licenseValidatedAt']);
+    return;
+  }
+  if (!tier) return;
   if (Date.now() - (licenseValidatedAt || 0) < 24 * 60 * 60 * 1000) return;
   try {
     const installId = await getInstallId();
