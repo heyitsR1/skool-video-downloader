@@ -294,6 +294,14 @@ async function resolveYouTubeQualities(sourceId) {
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 // Central entry: takes a registry video entry, returns { qualities, title? }.
 async function resolveQualities(video) {
+  // Wire captures (webRequest) carry the already-signed master playlist URL and
+  // no sourceId — even when labelled loom/vimeo. Resolving them through the
+  // platform API with an undefined sourceId can only fail (and for private
+  // embeds the wire URL is the ONLY thing that works: it rides the signature
+  // the player itself was granted). Parse the master directly.
+  if (video.url && !video.sourceId) {
+    return { qualities: await resolveMuxQualities(video.url, video.headers) };
+  }
   switch (video.platform) {
     case 'skool':
     case 'hls':
