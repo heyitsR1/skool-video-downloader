@@ -32,6 +32,12 @@ async function resolveMuxQualities(masterUrl, headers) {
   if (!res.ok) throw new Error(`Playlist fetch failed (${res.status}) — replay the video and try again`);
   const text = await res.text();
   const baseUrl = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1);
+  // CDN-signed HLS (Loom's luna.loom.com, some Mux/Vimeo edges) carries the
+  // CloudFront signature (Policy/Signature/Key-Pair-Id) as a query string on the
+  // master URL only; the relative variant/audio/segment URIs inherit it. Carry
+  // it down so signed children don't 403. resolveUrl only applies it to children
+  // that have no query of their own, so already-tokenised Mux URLs are untouched.
+  const parentQuery = (masterUrl.split('?')[1] || '');
 
   if (!text.includes('#EXT-X-STREAM-INF')) {
     // Already a media playlist — single muxed rendition.
@@ -42,7 +48,7 @@ async function resolveMuxQualities(masterUrl, headers) {
   const audioLine = text.split('\n').find(l => l.includes('TYPE=AUDIO') && l.includes('URI="'));
   if (audioLine) {
     const m = audioLine.match(/URI="([^"]+)"/);
-    if (m) audioUrl = resolveUrl(m[1], baseUrl);
+    if (m) audioUrl = resolveUrl(m[1], baseUrl, parentQuery);
   }
 
   const lines = text.split('\n');
@@ -55,7 +61,7 @@ async function resolveMuxQualities(masterUrl, headers) {
     for (let j = i + 1; j < lines.length; j++) {
       const cand = lines[j].trim();
       if (cand && !cand.startsWith('#')) {
-        out.push({ label: heightLabel(height), height, bandwidth, kind: 'hls', videoUrl: resolveUrl(cand, baseUrl), audioUrl, headers });
+        out.push({ label: heightLabel(height), height, bandwidth, kind: 'hls', videoUrl: resolveUrl(cand, baseUrl, parentQuery), audioUrl, headers });
         break;
       }
     }
@@ -66,9 +72,14 @@ async function resolveMuxQualities(masterUrl, headers) {
   return out.filter(q => (seen.has(q.label) ? false : (seen.add(q.label), true)));
 }
 
-function resolveUrl(url, baseUrl) {
-  if (url.startsWith('http')) return url;
-  return url.startsWith('/') ? new URL(baseUrl).origin + url : new URL(url, baseUrl).href;
+function resolveUrl(url, baseUrl, parentQuery) {
+  const abs = url.startsWith('http')
+    ? url
+    : (url.startsWith('/') ? new URL(baseUrl).origin + url : new URL(url, baseUrl).href);
+  // Inherit the parent playlist's signing query only when the child carries
+  // none of its own — this is how CDN-signed HLS (CloudFront) chains work.
+  if (parentQuery && !abs.includes('?')) return `${abs}?${parentQuery}`;
+  return abs;
 }
 
 // ── Vimeo ───────────────────────────────────────────────────────────────────
@@ -131,13 +142,17 @@ async function resolveWistiaQualities(sourceId) {
 }
 
 // ── Loom ────────────────────────────────────────────────────────────────────
-// The transcoded-url endpoint hands back a direct MP4 (CDN-signed). Session
+// raw-url returns a signed HLS master (the CloudFront signature is a query
+// string on that URL; resolveMuxQualities propagates it down to the variant and
+// segments). transcoded-url used to hand back a direct MP4 but Loom now answers
+// it with 204 No Content for most videos, so raw-url is tried first. Session
 // cookies ride along via credentials:'include', so member-only videos the user
-// can watch resolve too. Loom serves one transcode; quality choice is Loom's.
+// can watch resolve too — an anonymous request for a private video 404s, hence
+// the "open it on loom.com once" hint.
 async function resolveLoomQualities(sourceId) {
   const endpoints = [
-    `https://www.loom.com/api/campaigns/sessions/${sourceId}/transcoded-url`,
-    `https://www.loom.com/api/campaigns/sessions/${sourceId}/raw-url`
+    `https://www.loom.com/api/campaigns/sessions/${sourceId}/raw-url`,
+    `https://www.loom.com/api/campaigns/sessions/${sourceId}/transcoded-url`
   ];
   for (const ep of endpoints) {
     try {
@@ -147,8 +162,12 @@ async function resolveLoomQualities(sourceId) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ anonID: crypto.randomUUID(), deviceID: null, force_original: false, password: null })
       });
-      if (!res.ok) continue;
-      const data = await res.json();
+      // 204 (transcoded-url's usual answer now) and other empty/non-OK bodies:
+      // move on to the next endpoint rather than JSON-parsing an empty string.
+      if (!res.ok || res.status === 204) continue;
+      const text = await res.text();
+      if (!text) continue;
+      const data = JSON.parse(text);
       if (data?.url) {
         const isHls = data.url.includes('.m3u8');
         if (isHls) return await resolveMuxQualities(data.url, { Referer: `https://www.loom.com/share/${sourceId}` });
@@ -156,7 +175,7 @@ async function resolveLoomQualities(sourceId) {
       }
     } catch { /* try next endpoint */ }
   }
-  throw new Error('Could not resolve this Loom video — open it on loom.com once, then retry');
+  throw new Error('Could not resolve this Loom video — open it on loom.com once (log in if it is private), then retry');
 }
 
 // ── YouTube ─────────────────────────────────────────────────────────────────
