@@ -755,14 +755,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         };
         const host = refererHosts[video.platform];
         let ruleId = null;
-        if (host && video.pageUrl) {
+        if (host && video.pageUrl && !video.url) {
           ruleId = 900000 + (tabId > 0 ? tabId % 90000 : Math.floor(Math.random() * 90000));
           await applyHeaderRules(ruleId, `https://${host}/`, { Referer: video.pageUrl });
-        } else if ((video.platform === 'skool' || video.platform === 'hls') && video.url) {
-          // Skool-native Mux uses playback restrictions: the CDN 403s any
-          // playlist fetch whose Referer isn't skool.com. Re-attach the headers
-          // captured off the wire (fall back to a bare skool.com Referer) for
-          // the service-worker master fetch, same as the download step does.
+        } else if (video.url) {
+          // Wire-captured HLS (Skool-native Mux, or a loom/vimeo master caught
+          // off webRequest): the CDN 403s any playlist fetch whose Referer
+          // doesn't match the player's. Re-attach the headers captured off the
+          // wire (fall back to a bare skool.com Referer) for the
+          // service-worker master fetch, same as the download step does.
           const headers = (video.headers && (video.headers.Referer || video.headers.Origin))
             ? video.headers
             : { Referer: video.pageUrl || 'https://www.skool.com/', Origin: 'https://www.skool.com' };
