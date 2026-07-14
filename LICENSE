@@ -1,0 +1,30 @@
+Skool Video Downloader — Source-Available License
+
+Copyright (c) 2026 Aarohan (Tailsgate). All rights reserved.
+
+The source code of this project is made publicly visible for transparency,
+so users can verify exactly what the extension does before installing it.
+Visibility is not a grant of rights.
+
+Permitted:
+  1. Viewing and studying the source code.
+  2. Installing and using the official release builds published at
+     https://github.com/heyitsR1/skool-video-downloader/releases for
+     personal use, subject to the product's free-tier and paid-license
+     terms.
+
+Not permitted without prior written permission from the copyright holder:
+  1. Copying, redistributing, republishing, or mirroring this software or
+     any part of its source code, in original or modified form.
+  2. Creating, using, or distributing modified or derivative versions,
+     including versions with licensing or payment checks altered or
+     removed.
+  3. Selling, sublicensing, or otherwise commercially exploiting this
+     software or derivatives of it.
+
+Circumventing the license/payment mechanism of the official builds is a
+violation of this license.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.

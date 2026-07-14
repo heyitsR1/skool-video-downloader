@@ -37,3 +37,11 @@ node scripts/build.mjs   # → dist/*.zip
 ## Support
 
 Questions or issues → https://tailsgate.com/skool-video-downloader
+
+## License
+
+Source-available, not open source: the code is public for transparency so you
+can verify what the extension does, but all rights are reserved — no
+redistribution, no modified/derivative versions, no removing license checks.
+See [LICENSE](LICENSE). Use the official builds from
+[Releases](https://github.com/heyitsR1/skool-video-downloader/releases).
