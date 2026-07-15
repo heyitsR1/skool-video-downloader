@@ -8,6 +8,10 @@ This is the **full version**, installed manually (sideloaded). The Chrome Web
 Store edition doesn't include YouTube support, because the store's rules don't
 allow extensions to save videos from YouTube. If you need that, use this build.
 
+## Demo
+
+Watch the full walkthrough: https://www.youtube.com/watch?v=MfELQ1Y3vv4
+
 ## Install (Chrome / Edge / Brave)
 
 1. Download the latest `skool-video-downloader-full-vX.Y.Z.zip` from the
