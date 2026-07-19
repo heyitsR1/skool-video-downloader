@@ -36,6 +36,34 @@ async function svdLog(context, message) {
 // tabId -> { videos: Map(key -> videoEntry) }  captured streams / embeds per tab
 const tabVideos = new Map();
 
+// The registry must survive MV3 service-worker restarts: wire-captured native
+// Skool videos exist ONLY here (nothing on the page for RESCAN to re-find), so
+// losing the Map means an empty popup until a full page reload. Mirror it to
+// storage.session — survives SW death, cleared on browser exit — and rehydrate
+// before any registry read or write (every access path awaits registryReady).
+let persistTimer = null;
+function persistRegistry() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    const snapshot = {};
+    for (const [tabId, t] of tabVideos) snapshot[tabId] = [...t.videos.values()];
+    chrome.storage.session.set({ videoRegistry: snapshot }).catch(() => {});
+  }, 150);
+}
+
+const registryReady = (async () => {
+  try {
+    const { videoRegistry } = await chrome.storage.session.get('videoRegistry');
+    if (!videoRegistry) return;
+    const openTabs = new Set((await chrome.tabs.query({})).map(t => t.id));
+    for (const [tabId, entries] of Object.entries(videoRegistry)) {
+      const id = Number(tabId);
+      if (!openTabs.has(id)) continue; // tab closed while the worker was dead
+      if (entries.length) tabVideos.set(id, { videos: new Map(entries.map(e => [e.key, e])) });
+    }
+  } catch { /* cold start with an empty registry = pre-persistence behavior */ }
+})();
+
 // Global concurrent download queue (max 3 running, rest wait).
 const MAX_CONCURRENT = 3;
 const downloadQueue = [];        // pending job descriptors
@@ -70,6 +98,7 @@ function addVideo(tabId, entry) {
     // Merge — a later webRequest capture may carry headers a page-props entry lacked.
     Object.assign(t.videos.get(entry.key), entry);
   }
+  persistRegistry();
   chrome.tabs.sendMessage(tabId, { type: 'VIDEO_DETECTED' }).catch(() => {});
 }
 
@@ -105,14 +134,14 @@ try {
           : /loom/.test(url) ? 'loom'
           : 'hls';
 
-        addVideo(details.tabId, {
+        registryReady.then(() => addVideo(details.tabId, {
           key: `hls:${url}`,
           platform,
           label: PLATFORM_LABELS[platform] || 'Video',
           url,
           headers,
           title: null
-        });
+        }));
       } catch {}
     },
     { urls: ['*://*.mux.com/*', '*://*.video.skool.com/*', '*://*.vimeo.com/*', '*://*.vimeocdn.com/*', '*://*.akamaized.net/*', '*://*.loom.com/*'] },
@@ -122,6 +151,7 @@ try {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabVideos.delete(tabId);
+  persistRegistry();
   for (const [jobId, job] of activeJobs) {
     if (job.meta.tabId === tabId) { job.cancel(); activeJobs.delete(jobId); }
   }
@@ -131,11 +161,15 @@ function clearTab(tabId, reason, path) {
   if (!tabId) return;
   const had = tabVideos.get(tabId)?.videos.size || 0;
   tabVideos.delete(tabId);
+  persistRegistry();
   if (had) svdLog('clear', `${reason || 'clear'} dropped ${had} video(s) → ${String(path || '').slice(0, 120)}`);
 }
 
 // ── Keep-alive + license revalidation ─────────────────────────────────────────
-chrome.alarms.create('keepAlive', { periodInMinutes: 0.4 });
+// 0.5 is Chrome's alarm floor (shorter periods get clamped to 30s anyway).
+// Best-effort only — the SW can still die between firings, which is why the
+// video registry is mirrored to storage.session above.
+chrome.alarms.create('keepAlive', { periodInMinutes: 0.5 });
 chrome.alarms.create('revalidate', { periodInMinutes: 60 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === 'keepAlive') chrome.runtime.getPlatformInfo();
@@ -307,6 +341,7 @@ async function getVersionStatus() {
 // Always returns the payload too, so the popup can fall back to copy-for-email
 // when the network path is blocked.
 async function sendErrorReport(note, email, tabId) {
+  await registryReady; // 'detected' must reflect the restored registry, not a cold Map
   const { debugLog = [] } = await chrome.storage.local.get('debugLog');
   const [license, installId] = await Promise.all([
     getLicenseStatus().catch(() => null),
@@ -321,7 +356,10 @@ async function sendErrorReport(note, email, tabId) {
     email: typeof email === 'string' && email.includes('@') ? email.slice(0, 120) : undefined,
     version: chrome.runtime.getManifest().version,
     ua: navigator.userAgent,
-    tier: license?.tier || 'free',
+    // Free tier: fold the weekly-allowance state into the tier string so the
+    // report worker shows it without needing a new column/redeploy.
+    tier: license?.tier
+      || (Number.isFinite(license?.remaining) ? `free (${license.remaining}/${license.limit} left)` : 'free'),
     detected: detected.length ? detected.join(', ').slice(0, 300) : 'none',
     installId,
     log: debugLog.slice(-10),
@@ -732,22 +770,23 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       // Content script signals a fresh full page load OR an SPA route change —
       // drop the prior page's captured videos so stale entries don't linger
       // across lesson navigation (the "phantom sibling-lesson video" bug).
-      clearTab(tabId, req.reason, req.path);
-      sendResponse({ ok: true });
+      // Awaits rehydration so the clear lands on (and re-persists over) the
+      // restored registry rather than being overwritten by it.
+      registryReady.then(() => { clearTab(tabId, req.reason, req.path); sendResponse({ ok: true }); });
       return true;
 
     case 'REGISTER_VIDEOS':
       // Content script reports embeds it found (Vimeo/Loom/YouTube/Wistia/etc).
-      (req.videos || []).forEach(v => addVideo(tabId, v));
-      sendResponse({ ok: true });
+      registryReady.then(() => { (req.videos || []).forEach(v => addVideo(tabId, v)); sendResponse({ ok: true }); });
       return true;
 
     case 'GET_VIDEOS':
-      sendResponse({ videos: listVideos(tabId) });
+      registryReady.then(() => sendResponse({ videos: listVideos(tabId) }));
       return true;
 
     case 'RESOLVE_QUALITIES':
       (async () => {
+        await registryReady;
         const video = listVideos(tabId).find(v => v.key === req.key);
         if (!video) { sendResponse({ ok: false, error: 'Video no longer detected — replay it and reopen.' }); return; }
 
@@ -801,7 +840,9 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     case 'START_DOWNLOAD':
       (async () => {
         const { allowed, reason } = await canDownload();
-        if (!allowed) { sendResponse({ ok: false, reason }); return; }
+        // Log the denial — a free user hitting the paywall then filing a "no
+        // details" problem report is otherwise indistinguishable from a bug.
+        if (!allowed) { svdLog('license', `download blocked: ${reason}`); sendResponse({ ok: false, reason }); return; }
         const jobId = enqueueDownload({
           quality: req.quality, filename: req.filename, tabId, platform: req.quality.platform, label: req.label
         });
