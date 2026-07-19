@@ -32,7 +32,28 @@ let currentVideos = [];
 let ytGuideVideoId = null; // sourceId of the YouTube video behind the handoff view
 const jobLabels = new Map(); // jobId -> filename (for manager rows)
 
+// Fills every [data-i18n] / [data-i18n-placeholder] / [data-i18n-aria-label]
+// element from the active locale's messages.json. Chrome Web Store listing
+// translations and popup UI translations are separate systems that happen to
+// share the same _locales/*/messages.json files — this just consumes the UI
+// keys at render time.
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const msg = chrome.i18n.getMessage(el.dataset.i18n);
+    if (msg) el.textContent = msg;
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    const msg = chrome.i18n.getMessage(el.dataset.i18nPlaceholder);
+    if (msg) el.placeholder = msg;
+  });
+  document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+    const msg = chrome.i18n.getMessage(el.dataset.i18nAriaLabel);
+    if (msg) el.setAttribute('aria-label', msg);
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  applyI18n();
   document.getElementById('footer-version').textContent = 'v' + chrome.runtime.getManifest().version;
   setupPricingModal();
   setupLicenseActivation();
@@ -72,20 +93,20 @@ async function initLicenseUI() {
   upgradeBtn.classList.add('hidden');
 
   if (status.tier === 'lifetime') {
-    badge.textContent = 'Lifetime'; badge.className = 'badge badge--unlimited';
-    creditsText.textContent = 'Unlimited downloads — forever';
+    badge.textContent = chrome.i18n.getMessage('planLifetimeName'); badge.className = 'badge badge--unlimited';
+    creditsText.textContent = chrome.i18n.getMessage('lifetimeCredits');
     licenseSection.classList.add('hidden');
   } else if (status.tier === 'monthly') {
-    badge.textContent = 'Pro'; badge.className = 'badge badge--pro';
-    creditsText.textContent = 'Unlimited downloads';
+    badge.textContent = chrome.i18n.getMessage('badgePro'); badge.className = 'badge badge--pro';
+    creditsText.textContent = chrome.i18n.getMessage('proCredits');
     lifetimeLink.href = CHECKOUT_LIFETIME; lifetimeLink.classList.remove('hidden');
     licenseSection.classList.add('hidden');
   } else {
-    badge.textContent = 'Free'; badge.className = 'badge badge--free';
+    badge.textContent = chrome.i18n.getMessage('badgeFree'); badge.className = 'badge badge--free';
     const rem = status.remaining;
-    creditsText.innerHTML = rem > 0
-      ? `<strong>${rem}</strong> of ${status.limit} free downloads left this week`
-      : 'Weekly free downloads used up — resets in a few days';
+    creditsText.textContent = rem > 0
+      ? chrome.i18n.getMessage('creditsRemaining', [String(rem), String(status.limit)])
+      : chrome.i18n.getMessage('creditsExhausted');
     upgradeBtn.classList.remove('hidden');
     licenseSection.classList.remove('hidden');
   }
@@ -136,22 +157,25 @@ function renderVideoList() {
   const box = document.getElementById('videos');
 
   if (!activeTab?.url?.includes('skool.com')) {
-    statusEl.textContent = 'Open a Skool lesson to start';
-    hintEl.textContent = 'Go to your Skool classroom or community, then open a video.';
+    statusEl.textContent = chrome.i18n.getMessage('statusOpenLesson');
+    hintEl.textContent = chrome.i18n.getMessage('hintOpenLesson');
     box.classList.add('hidden');
     return;
   }
 
   if (!currentVideos.length) {
-    statusEl.textContent = 'No video detected yet';
-    hintEl.textContent = 'Press play on the lesson video, then reopen this popup.';
+    statusEl.textContent = chrome.i18n.getMessage('statusNoVideo');
+    hintEl.textContent = chrome.i18n.getMessage('hintNoVideo');
     box.classList.add('hidden');
     return;
   }
 
-  statusEl.textContent = `${currentVideos.length} video${currentVideos.length > 1 ? 's' : ''} found`;
+  statusEl.textContent = chrome.i18n.getMessage(
+    currentVideos.length > 1 ? 'statusFoundPlural' : 'statusFoundSingular',
+    [String(currentVideos.length)]
+  );
   statusEl.classList.add('status--ok');
-  hintEl.textContent = 'Pick a video to choose quality and download.';
+  hintEl.textContent = chrome.i18n.getMessage('hintPickVideo');
 
   box.innerHTML = '';
   currentVideos.forEach((v, i) => {
@@ -160,7 +184,7 @@ function renderVideoList() {
     const icon = PLATFORM_ICON[v.platform] || '🎞️';
     row.innerHTML =
       `<span class="video-row__thumb">${icon}</span>` +
-      `<span class="video-row__meta"><span class="video-row__title">${escapeHtml(v.title || `Video ${i + 1}`)}</span>` +
+      `<span class="video-row__meta"><span class="video-row__title">${escapeHtml(v.title || chrome.i18n.getMessage('videoDefaultTitle', [String(i + 1)]))}</span>` +
       `<span class="video-row__platform">${escapeHtml(v.label || v.platform)}</span></span>` +
       `<span class="video-row__go">›</span>`;
     if (v.thumb) attachThumb(row.querySelector('.video-row__thumb'), v.thumb);
@@ -219,14 +243,14 @@ async function openQuality(video) {
   thumbEl.innerHTML = '';
   if (video.thumb) { attachThumb(thumbEl, video.thumb); thumbEl.classList.remove('hidden'); }
   else thumbEl.classList.add('hidden');
-  titleEl.textContent = video.title || `${video.label || video.platform} · loading qualities…`;
-  listEl.innerHTML = '<div class="quality-loading">Resolving available resolutions…</div>';
+  titleEl.textContent = video.title || `${video.label || video.platform} · ${chrome.i18n.getMessage('qualityResolving')}`;
+  listEl.innerHTML = `<div class="quality-loading">${escapeHtml(chrome.i18n.getMessage('qualityResolving'))}</div>`;
 
   const res = await send({ type: 'RESOLVE_QUALITIES', tabId: activeTab?.id, key: video.key });
   if (!res?.ok) {
     titleEl.textContent = video.title || video.label || video.platform;
     listEl.innerHTML = '';
-    showError(errEl, res?.error || 'Could not resolve this video.');
+    showError(errEl, res?.error || chrome.i18n.getMessage('qualityErrorGeneric'));
     return;
   }
 
@@ -238,13 +262,13 @@ async function openQuality(video) {
   res.qualities.forEach((q) => {
     const btn = document.createElement('button');
     btn.className = 'quality-item';
-    const sub = q.kind === 'merge' ? 'video + audio · merged in browser'
-      : q.kind === 'hls' ? 'HLS → MP4'
-      : 'MP4';
+    const sub = q.kind === 'merge' ? chrome.i18n.getMessage('qualityKindMerged')
+      : q.kind === 'hls' ? chrome.i18n.getMessage('qualityKindHls')
+      : chrome.i18n.getMessage('qualityKindMp4');
     btn.innerHTML =
       `<span class="quality-item__label">${escapeHtml(q.label)}</span>` +
-      `<span class="quality-item__sub">${sub}${q.size ? ' · ' + (q.size / 1048576).toFixed(0) + ' MB' : ''}</span>` +
-      `<span class="quality-item__dl">Download</span>`;
+      `<span class="quality-item__sub">${escapeHtml(sub)}${q.size ? ' · ' + (q.size / 1048576).toFixed(0) + ' MB' : ''}</span>` +
+      `<span class="quality-item__dl">${escapeHtml(chrome.i18n.getMessage('qualityDownloadBtn'))}</span>`;
     btn.addEventListener('click', () => startDownload(q, nameInput.value.trim() || sanitizeName(title), video));
     listEl.appendChild(btn);
   });
@@ -257,9 +281,9 @@ async function startDownload(quality, filename, video) {
   const res = await send({ type: 'START_DOWNLOAD', tabId: activeTab?.id, quality, filename, label: video.label });
   if (!res?.ok) {
     if (res?.reason === 'weekly_limit') {
-      openPricingModal('You\'ve used your 5 free downloads this week — go unlimited to keep saving.');
+      openPricingModal(chrome.i18n.getMessage('weeklyLimitMsg'));
     } else {
-      showError(errEl, 'Could not start the download. Try again.');
+      showError(errEl, chrome.i18n.getMessage('downloadStartError'));
     }
     return;
   }
@@ -286,7 +310,9 @@ function renderManager(items) {
 
   const running = items.filter(i => i.state === 'running').length;
   const queued = items.filter(i => i.state === 'queued').length;
-  count.textContent = `${running} active${queued ? ` · ${queued} queued` : ''}`;
+  count.textContent = queued
+    ? chrome.i18n.getMessage('managerActiveQueued', [String(running), String(queued)])
+    : chrome.i18n.getMessage('managerActive', [String(running)]);
 
   list.innerHTML = '';
   items.forEach(i => list.appendChild(managerRow(i)));
@@ -296,37 +322,37 @@ function managerRow(item) {
   const row = document.createElement('div');
   row.className = 'dl-row';
   row.dataset.jobId = item.jobId;
-  const name = jobLabels.get(item.jobId) || item.filename || 'download';
+  const name = jobLabels.get(item.jobId) || item.filename || chrome.i18n.getMessage('defaultDownloadName');
   const phase = phaseLabel(item);
   row.innerHTML =
     `<div class="dl-row__top">` +
       `<span class="dl-row__name">${escapeHtml(name)}</span>` +
-      `<span class="dl-row__phase">${phase}</span>` +
+      `<span class="dl-row__phase">${escapeHtml(phase)}</span>` +
     `</div>` +
     `<div class="dl-row__barwrap"><div class="dl-row__bar" style="width:${item.percent || 0}%"></div></div>` +
     `<div class="dl-row__foot">` +
       `<span class="dl-row__speed">${item.speed || ''}</span>` +
-      (item.state === 'done' ? `<span class="dl-row__done">✓ Saved</span>`
-        : item.state === 'error' || item.phase === 'error' ? `<span class="dl-row__err">Failed</span> <button class="dl-row__report" data-report>🚩 Report</button>`
-        : item.state === 'cancelled' ? `<span class="dl-row__err">Cancelled</span>`
-        : `<button class="dl-row__cancel" data-cancel="${item.jobId}">Cancel</button>`) +
+      (item.state === 'done' ? `<span class="dl-row__done">${escapeHtml(chrome.i18n.getMessage('dlSaved'))}</span>`
+        : item.state === 'error' || item.phase === 'error' ? `<span class="dl-row__err">${escapeHtml(chrome.i18n.getMessage('dlFailed'))}</span> <button class="dl-row__report" data-report>${escapeHtml(chrome.i18n.getMessage('dlReportBtn'))}</button>`
+        : item.state === 'cancelled' ? `<span class="dl-row__err">${escapeHtml(chrome.i18n.getMessage('dlCancelled'))}</span>`
+        : `<button class="dl-row__cancel" data-cancel="${item.jobId}">${escapeHtml(chrome.i18n.getMessage('dlCancelBtn'))}</button>`) +
     `</div>`;
   const cancel = row.querySelector('[data-cancel]');
   if (cancel) cancel.addEventListener('click', () => send({ type: 'CANCEL_JOB', jobId: item.jobId }));
   const report = row.querySelector('[data-report]');
-  if (report) report.addEventListener('click', () => openReportModal(item.error || `Download failed: ${name}`));
+  if (report) report.addEventListener('click', () => openReportModal(item.error || chrome.i18n.getMessage('downloadFailedLabel', [name])));
   return row;
 }
 
 function phaseLabel(item) {
-  if (item.state === 'queued') return 'Queued';
-  if (item.state === 'cancelled') return 'Cancelled';
+  if (item.state === 'queued') return chrome.i18n.getMessage('phaseQueued');
+  if (item.state === 'cancelled') return chrome.i18n.getMessage('phaseCancelled');
   switch (item.phase) {
-    case 'merging': return 'Merging…';
-    case 'saving': return 'Saving…';
-    case 'done': return 'Done';
-    case 'error': return 'Error';
-    case 'starting': return 'Starting…';
+    case 'merging': return chrome.i18n.getMessage('phaseMerging');
+    case 'saving': return chrome.i18n.getMessage('phaseSaving');
+    case 'done': return chrome.i18n.getMessage('phaseDone');
+    case 'error': return chrome.i18n.getMessage('phaseError');
+    case 'starting': return chrome.i18n.getMessage('phaseStarting');
     default: return `${item.percent || 0}%`;
   }
 }
@@ -385,15 +411,15 @@ function setupLicenseActivation() {
   btn.addEventListener('click', async () => {
     const key = input.value.trim().toUpperCase();
     if (!key) return;
-    btn.disabled = true; btn.textContent = 'Verifying…';
+    btn.disabled = true; btn.textContent = chrome.i18n.getMessage('verifyingBtn');
     msg.textContent = ''; msg.className = 'msg';
     const result = await send({ type: 'ACTIVATE_LICENSE', licenseKey: key });
     if (result?.valid) {
-      msg.textContent = 'License activated!'; msg.className = 'msg msg--success';
+      msg.textContent = chrome.i18n.getMessage('licenseActivated'); msg.className = 'msg msg--success';
       setTimeout(initLicenseUI, 1000);
     } else {
-      msg.textContent = 'Invalid or expired license key.'; msg.className = 'msg msg--error';
-      btn.disabled = false; btn.textContent = 'Activate license';
+      msg.textContent = chrome.i18n.getMessage('licenseInvalid'); msg.className = 'msg msg--error';
+      btn.disabled = false; btn.textContent = chrome.i18n.getMessage('activateBtn');
     }
   });
 }
@@ -410,7 +436,7 @@ async function initUpdateBanner() {
 
   const banner = document.getElementById('update-banner');
   document.getElementById('update-banner-text').textContent =
-    status.message || `v${status.latest} is out — you're on v${status.current}`;
+    status.message || chrome.i18n.getMessage('updateFallback', [String(status.latest), String(status.current)]);
   document.getElementById('update-open').addEventListener('click', () =>
     chrome.tabs.create({ url: status.url }));
   document.getElementById('update-dismiss').addEventListener('click', () => {
@@ -435,7 +461,7 @@ function showError(errEl, message) {
   text.textContent = message;
   const btn = document.createElement('button');
   btn.className = 'msg__report';
-  btn.textContent = '🚩 Report this error';
+  btn.textContent = chrome.i18n.getMessage('reportThisError');
   btn.addEventListener('click', () => openReportModal(message));
   errEl.append(text, btn);
   errEl.classList.remove('hidden');
@@ -446,7 +472,7 @@ function openReportModal(errorText) {
   const modal = document.getElementById('report-modal');
   const ctx = document.getElementById('report-context');
   if (errorText) {
-    ctx.textContent = 'Error being reported: ' + errorText;
+    ctx.textContent = chrome.i18n.getMessage('reportErrorPrefix', [errorText]);
     ctx.classList.remove('hidden');
   } else {
     ctx.classList.add('hidden');
@@ -454,7 +480,7 @@ function openReportModal(errorText) {
   document.getElementById('report-msg').textContent = '';
   const sendBtn = document.getElementById('report-send');
   sendBtn.disabled = false;
-  sendBtn.textContent = 'Send report';
+  sendBtn.textContent = chrome.i18n.getMessage('reportSendBtn');
   // Prefill the email from the last report so repeat reporters type it once.
   chrome.storage.local.get('reportEmail').then(({ reportEmail }) => {
     if (reportEmail && !document.getElementById('report-email').value) {
@@ -478,26 +504,26 @@ function initReportModal() {
     const note = [reportErrorContext, userNote].filter(Boolean).join(' — ') || 'no details given';
 
     sendBtn.disabled = true;
-    sendBtn.textContent = 'Sending…';
+    sendBtn.textContent = chrome.i18n.getMessage('reportSending');
     if (email) chrome.storage.local.set({ reportEmail: email }).catch(() => {});
 
     const res = await send({ type: 'REPORT_PROBLEM', tabId: activeTab?.id, note, email });
     if (res?.ok) {
-      sendBtn.textContent = '✓ Sent — thank you!';
-      msg.textContent = email ? "We'll email you when it's fixed." : '';
+      sendBtn.textContent = chrome.i18n.getMessage('reportSentBtn');
+      msg.textContent = email ? chrome.i18n.getMessage('reportSentEmailNote') : '';
       msg.className = 'msg msg--success';
       setTimeout(() => modal.classList.add('hidden'), 1800);
       return;
     }
-    sendBtn.textContent = 'Send report';
+    sendBtn.textContent = chrome.i18n.getMessage('reportSendBtn');
     sendBtn.disabled = false;
     try {
       await navigator.clipboard.writeText(
         'Skool Video Downloader problem report\n' + JSON.stringify(res?.payload ?? {}, null, 2)
       );
-      msg.textContent = "Couldn't reach our server — report copied to your clipboard. Please paste it into an email to support@tailsgate.com.";
+      msg.textContent = chrome.i18n.getMessage('reportClipboardFallback');
     } catch {
-      msg.textContent = "Couldn't reach our server — please email support@tailsgate.com.";
+      msg.textContent = chrome.i18n.getMessage('reportServerError');
     }
     msg.className = 'msg msg--error';
   });

@@ -13,29 +13,29 @@
         <span class="logo__mark"><img src="icons/icon48.png" alt="" width="24" height="24"></span>
         <span class="logo__text">Skool Video Downloader</span>
       </span>
-      <span id="tier-badge" class="badge badge--free">Free</span>
+      <span id="tier-badge" class="badge badge--free" data-i18n="badgeFree">Free</span>
     </div>
 
     <!-- Update banner (hidden unless this channel is behind; dismiss per version) -->
     <div id="update-banner" class="update-banner hidden">
       <button id="update-open" class="update-banner__body">
-        <span id="update-banner-text">A new version is available</span>
-        <span class="update-banner__go">Update →</span>
+        <span id="update-banner-text" data-i18n="updateBannerDefault">A new version is available</span>
+        <span class="update-banner__go" data-i18n="updateGo">Update →</span>
       </button>
-      <button id="update-dismiss" class="update-banner__x" aria-label="Dismiss">&times;</button>
+      <button id="update-dismiss" class="update-banner__x" data-i18n-aria-label="updateDismissAria" aria-label="Dismiss">&times;</button>
     </div>
 
     <!-- Trial / plan bar -->
     <div id="credits-row" class="credits-row">
-      <span id="credits-text" class="credits-text">Loading…</span>
-      <a id="lifetime-link" href="#" class="plan-link hidden" target="_blank">Get lifetime</a>
+      <span id="credits-text" class="credits-text" data-i18n="creditsLoading">Loading…</span>
+      <a id="lifetime-link" href="#" class="plan-link hidden" target="_blank" data-i18n="lifetimeLink">Get lifetime</a>
     </div>
     <button id="upgrade-btn" class="upgrade-cta hidden">
-      <span class="upgrade-cta__bolt">⚡</span> Unlimited downloads &amp; full quality
+      <span class="upgrade-cta__bolt">⚡</span> <span data-i18n="upgradeBtn">Unlimited downloads &amp; full quality</span>
     </button>
 
     <!-- Detection status -->
-    <div id="status-text" class="status">Checking this page…</div>
+    <div id="status-text" class="status" data-i18n="statusChecking">Checking this page…</div>
     <div id="hint-text" class="hint"></div>
 
     <!-- Detected videos -->
@@ -43,33 +43,33 @@
 
     <!-- Quality picker (opened for a chosen video) -->
     <div id="quality-view" class="quality-view hidden">
-      <button id="quality-back" class="link-back">← Back to videos</button>
+      <button id="quality-back" class="link-back" data-i18n="qualityBack">← Back to videos</button>
       <div class="quality-view__head">
         <span id="quality-thumb" class="quality-thumb hidden"></span>
-        <div class="quality-view__title" id="quality-title">Choose quality</div>
+        <div class="quality-view__title" id="quality-title" data-i18n="qualityTitleDefault">Choose quality</div>
       </div>
       <div id="quality-list" class="quality-list"></div>
       <div class="section section--name">
-        <label class="label" for="filename-input">Save as</label>
-        <input type="text" id="filename-input" class="input" placeholder="filename">
+        <label class="label" for="filename-input" data-i18n="saveAsLabel">Save as</label>
+        <input type="text" id="filename-input" class="input" data-i18n-placeholder="filenamePlaceholder" placeholder="filename">
       </div>
       <div id="quality-error" class="msg msg--error hidden"></div>
     </div>
 
     <!-- YouTube handoff notice (both builds — YouTube blocks in-browser downloads) -->
     <div id="yt-policy-view" class="quality-view hidden">
-      <button id="yt-policy-back" class="link-back">← Back to videos</button>
+      <button id="yt-policy-back" class="link-back" data-i18n="qualityBack">← Back to videos</button>
       <div class="yt-policy">
-        <div class="yt-policy__title">Heads up</div>
-        <p class="yt-policy__body">YouTube blocks downloads from browser extensions — all of them, not just ours. Our short guide has a copy-paste command that saves this exact video (link pre-filled). First time takes ~2 minutes, seconds after that.</p>
-        <button id="yt-guide-btn" class="upgrade-cta yt-policy__btn">Get this video →</button>
+        <div class="yt-policy__title" data-i18n="ytHeadsUp">Heads up</div>
+        <p class="yt-policy__body" data-i18n="ytPolicyBody">YouTube blocks downloads from browser extensions — all of them, not just ours. Our short guide has a copy-paste command that saves this exact video (link pre-filled). First time takes ~2 minutes, seconds after that.</p>
+        <button id="yt-guide-btn" class="upgrade-cta yt-policy__btn" data-i18n="ytGuideBtn">Get this video →</button>
       </div>
     </div>
 
     <!-- Download manager -->
     <div id="manager" class="manager hidden">
       <div class="manager__head">
-        <span class="manager__title">Downloads</span>
+        <span class="manager__title" data-i18n="downloadsTitle">Downloads</span>
         <span id="manager__count" class="manager__count"></span>
       </div>
       <div id="manager__list" class="manager__list"></div>
@@ -79,15 +79,15 @@
     <div id="license-section" class="hidden">
       <hr class="divider">
       <div class="section">
-        <label class="label" for="license-input">Have a license key?</label>
-        <input type="text" id="license-input" class="input input--mono" placeholder="SVD-XXXX-XXXX-XXXX">
+        <label class="label" for="license-input" data-i18n="licenseLabel">Have a license key?</label>
+        <input type="text" id="license-input" class="input input--mono" data-i18n-placeholder="licensePlaceholder" placeholder="SVD-XXXX-XXXX-XXXX">
       </div>
-      <button id="activate-btn" class="btn btn--outline">Activate license</button>
+      <button id="activate-btn" class="btn btn--outline" data-i18n="activateBtn">Activate license</button>
       <div id="activate-msg" class="msg"></div>
     </div>
 
     <div class="footer">
-      <span id="footer-version">v1.0.0</span> · <a href="https://tailsgate.com/skool-video-downloader" class="footer-link" target="_blank">Help</a> · <button id="footer-report" class="footer-link footer-link--btn">🚩 Report a problem</button>
+      <span id="footer-version">v1.0.0</span> · <a href="https://tailsgate.com/skool-video-downloader" class="footer-link" target="_blank" data-i18n="footerHelp">Help</a> · <button id="footer-report" class="footer-link footer-link--btn" data-i18n="footerReport">🚩 Report a problem</button>
     </div>
   </div>
 
@@ -95,19 +95,19 @@
   <div id="report-modal" class="modal hidden">
     <div class="modal__backdrop" data-close-report></div>
     <div class="modal__sheet">
-      <button class="modal__close" data-close-report aria-label="Close">&times;</button>
-      <h2 class="modal__title">Report a problem</h2>
-      <p class="modal__sub">Sends a small diagnostic snapshot (extension version, plan, what was detected on this page, recent errors) straight to the developer. No page content or personal data.</p>
+      <button class="modal__close" data-close-report data-i18n-aria-label="closeAria" aria-label="Close">&times;</button>
+      <h2 class="modal__title" data-i18n="reportTitle">Report a problem</h2>
+      <p class="modal__sub" data-i18n="reportSub">Sends a small diagnostic snapshot (extension version, plan, what was detected on this page, recent errors) straight to the developer. No page content or personal data.</p>
       <div id="report-context" class="report-context hidden"></div>
       <div class="section">
-        <label class="label" for="report-note">What went wrong? <span class="label--muted">(optional)</span></label>
-        <textarea id="report-note" class="input input--area" maxlength="300" placeholder="e.g. The Loom video on this lesson never finishes downloading"></textarea>
+        <label class="label" for="report-note"><span data-i18n="reportNoteLabel">What went wrong?</span> <span class="label--muted" data-i18n="reportOptional">(optional)</span></label>
+        <textarea id="report-note" class="input input--area" maxlength="300" data-i18n-placeholder="reportNotePlaceholder" placeholder="e.g. The Loom video on this lesson never finishes downloading"></textarea>
       </div>
       <div class="section">
-        <label class="label" for="report-email">Email for a follow-up <span class="label--muted">(optional)</span></label>
-        <input type="email" id="report-email" class="input" placeholder="you@example.com">
+        <label class="label" for="report-email"><span data-i18n="reportEmailLabel">Email for a follow-up</span> <span class="label--muted" data-i18n="reportOptional">(optional)</span></label>
+        <input type="email" id="report-email" class="input" data-i18n-placeholder="reportEmailPlaceholder" placeholder="you@example.com">
       </div>
-      <button id="report-send" class="btn btn--outline">Send report</button>
+      <button id="report-send" class="btn btn--outline" data-i18n="reportSendBtn">Send report</button>
       <div id="report-msg" class="msg"></div>
     </div>
   </div>
@@ -116,53 +116,53 @@
   <div id="pricing-modal" class="modal hidden">
     <div class="modal__backdrop" data-close></div>
     <div class="modal__sheet">
-      <button class="modal__close" data-close aria-label="Close">&times;</button>
-      <h2 class="modal__title">Go Unlimited</h2>
-      <p class="modal__sub">Your free plan covers 5 downloads a week. Unlock unlimited saves at every quality.</p>
+      <button class="modal__close" data-close data-i18n-aria-label="closeAria" aria-label="Close">&times;</button>
+      <h2 class="modal__title" data-i18n="pricingTitle">Go Unlimited</h2>
+      <p class="modal__sub" data-i18n="pricingSub">Your free plan covers 5 downloads a week. Unlock unlimited saves at every quality.</p>
 
       <a id="buy-monthly" class="plan-card plan-card--featured" target="_blank">
-        <span class="plan-card__flag">🔥 MOST POPULAR</span>
+        <span class="plan-card__flag" data-i18n="planMostPopular">🔥 MOST POPULAR</span>
         <div class="plan-card__head">
           <div>
-            <span class="plan-card__name">Monthly</span>
-            <div class="plan-card__tagline">Cancel anytime · no commitment</div>
+            <span class="plan-card__name" data-i18n="planMonthlyName">Monthly</span>
+            <div class="plan-card__tagline" data-i18n="planMonthlyTagline">Cancel anytime · no commitment</div>
           </div>
           <span class="plan-card__price">$9.99 <small>/mo</small></span>
         </div>
         <ul class="plan-card__list">
-          <li>Unlimited downloads — no weekly cap</li>
-          <li>Every resolution the source offers</li>
-          <li>Skool, Loom, Vimeo, YouTube &amp; Wistia</li>
-          <li>3 concurrent downloads</li>
-          <li>100% private — processed on your device</li>
+          <li data-i18n="planFeatureUnlimited">Unlimited downloads — no weekly cap</li>
+          <li data-i18n="planFeatureResolution">Every resolution the source offers</li>
+          <li data-i18n="planFeaturePlatforms">Skool, Loom, Vimeo, YouTube &amp; Wistia</li>
+          <li data-i18n="planFeatureConcurrent">3 concurrent downloads</li>
+          <li data-i18n="planFeaturePrivate">100% private — processed on your device</li>
         </ul>
-        <span class="plan-card__cta">Go unlimited</span>
-        <p class="plan-card__reassure">Secure checkout · Instant access</p>
+        <span class="plan-card__cta" data-i18n="planCtaGoUnlimited">Go unlimited</span>
+        <p class="plan-card__reassure" data-i18n="planReassure">Secure checkout · Instant access</p>
       </a>
 
       <a id="buy-annual" class="plan-card plan-card--compact" target="_blank">
         <div class="plan-card__head">
           <div class="plan-card__name-group">
-            <span class="plan-card__name">Annual</span>
-            <span class="plan-card__name-sub">save 58% vs monthly</span>
+            <span class="plan-card__name" data-i18n="planAnnualName">Annual</span>
+            <span class="plan-card__name-sub" data-i18n="planAnnualSub">save 58% vs monthly</span>
           </div>
           <div class="plan-card__price plan-card__price--md">$49.99 <small>/yr</small></div>
         </div>
-        <span class="plan-card__cta plan-card__cta--ghost">Get annual</span>
+        <span class="plan-card__cta plan-card__cta--ghost" data-i18n="planCtaGetAnnual">Get annual</span>
       </a>
 
       <a id="buy-lifetime" class="plan-card plan-card--compact" target="_blank">
         <div class="plan-card__head">
           <div class="plan-card__name-group">
-            <span class="plan-card__name">Lifetime</span>
-            <span class="plan-card__name-sub">pay once, own forever</span>
+            <span class="plan-card__name" data-i18n="planLifetimeName">Lifetime</span>
+            <span class="plan-card__name-sub" data-i18n="planLifetimeSub">pay once, own forever</span>
           </div>
           <div class="plan-card__price plan-card__price--md">$79.99 <small>once</small></div>
         </div>
-        <span class="plan-card__cta plan-card__cta--ghost">Buy once</span>
+        <span class="plan-card__cta plan-card__cta--ghost" data-i18n="planCtaBuyOnce">Buy once</span>
       </a>
 
-      <button class="modal__later" data-close>Maybe later</button>
+      <button class="modal__later" data-close data-i18n="modalLater">Maybe later</button>
     </div>
   </div>
 
