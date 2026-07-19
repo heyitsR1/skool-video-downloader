@@ -30,38 +30,39 @@
 <body>
   <div class="wrap">
     <div class="hero">
-      <div class="badge">🎓 Skool Video Downloader</div>
-      <h1>You're all set</h1>
-      <p class="sub">Save Skool lessons — and any Loom, Vimeo, YouTube or Wistia video embedded inside them — as clean MP4 files, right from your browser.</p>
+      <div class="badge" data-i18n="welcomeBadge">🎓 Skool Video Downloader</div>
+      <h1 data-i18n="welcomeH1">You're all set</h1>
+      <p class="sub" data-i18n="welcomeSub">Save Skool lessons — and any Loom, Vimeo, YouTube or Wistia video embedded inside them — as clean MP4 files, right from your browser.</p>
     </div>
 
     <div class="card">
-      <h2>How to download a video</h2>
+      <h2 data-i18n="howToTitle">How to download a video</h2>
       <ol>
-        <li>Open any lesson in your Skool classroom or community.</li>
-        <li><strong>Press play</strong> on the video so the extension can detect the stream.</li>
-        <li>Click the <strong>Skool Video Downloader</strong> icon in your toolbar.</li>
-        <li>Pick the video, choose a quality, and hit <strong>Download</strong> — it saves straight to your Downloads folder as MP4.</li>
+        <li data-i18n="step1">Open any lesson in your Skool classroom or community.</li>
+        <li data-i18n-html="step2"><strong>Press play</strong> on the video so the extension can detect the stream.</li>
+        <li data-i18n-html="step3">Click the <strong>Skool Video Downloader</strong> icon in your toolbar.</li>
+        <li data-i18n-html="step4">Pick the video, choose a quality, and hit <strong>Download</strong> — it saves straight to your Downloads folder as MP4.</li>
       </ol>
-      <p class="note">Multiple downloads run at once (up to 3), with live progress and speed in the popup.</p>
+      <p class="note" data-i18n="multiDownloadNote">Multiple downloads run at once (up to 3), with live progress and speed in the popup.</p>
     </div>
 
     <div class="card">
-      <h2>Works across every player Skool uses</h2>
+      <h2 data-i18n="worksAcrossTitle">Works across every player Skool uses</h2>
       <div class="platforms">
-        <span class="chip">🎓 Skool native</span>
-        <span class="chip">🔴 Loom</span>
-        <span class="chip">🎬 Vimeo</span>
-        <span class="chip">▶️ YouTube</span>
-        <span class="chip">🟢 Wistia</span>
+        <span class="chip" data-i18n="chipSkool">🎓 Skool native</span>
+        <span class="chip" data-i18n="chipLoom">🔴 Loom</span>
+        <span class="chip" data-i18n="chipVimeo">🎬 Vimeo</span>
+        <span class="chip" data-i18n="chipYoutube">▶️ YouTube</span>
+        <span class="chip" data-i18n="chipWistia">🟢 Wistia</span>
       </div>
-      <p class="note">The extension auto-detects which platform each lesson uses and pulls the highest quality the source offers. Everything is processed locally on your device — no uploads, no tracking.</p>
+      <p class="note" data-i18n="platformNote">The extension auto-detects which platform each lesson uses and pulls the highest quality the source offers. Everything is processed locally on your device — no uploads, no tracking.</p>
     </div>
 
     <div class="free">
-      <a class="cta" href="https://www.skool.com" target="_blank">Open Skool →</a>
-      <p class="note">5 downloads every week are free — no credit card required.</p>
+      <a class="cta" href="https://www.skool.com" target="_blank" data-i18n="openSkoolCta">Open Skool →</a>
+      <p class="note" data-i18n="freeNote">5 downloads every week are free — no credit card required.</p>
     </div>
   </div>
+  <script src="welcome.js"></script>
 </body>
 </html>

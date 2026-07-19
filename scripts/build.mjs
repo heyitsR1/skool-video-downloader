@@ -24,7 +24,7 @@ const DIST = path.join(ROOT, 'dist');
 // scripts, dist, git, old zips — is deliberately excluded).
 const INCLUDE = [
   'manifest.json', 'background.js', 'content.js', 'detectors.js', 'buildConfig.js',
-  'popup.html', 'popup.css', 'popup.js', 'welcome.html', 'icons', 'lib', '_locales',
+  'popup.html', 'popup.css', 'popup.js', 'welcome.html', 'welcome.js', 'icons', 'lib', '_locales',
 ];
 
 const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')).version;
@@ -89,34 +89,104 @@ function stripYouTube(dir) {
   det = det.slice(0, i) + stub + det.slice(j + end.length);
   fs.writeFileSync(dp, det);
 
-  // 4. Drop "YouTube" from the store listing description.
-  const lp = path.join(dir, '_locales/en/messages.json');
-  let loc = fs.readFileSync(lp, 'utf8');
-  loc = mustReplace(loc,
-    'Save Skool, Loom, Vimeo, YouTube & Wistia lessons as MP4',
-    'Save Skool, Loom, Vimeo & Wistia lessons as MP4',
-    'store description');
-  fs.writeFileSync(lp, loc);
+  // 4. Drop "YouTube" from every locale's store listing description. Each
+  // locale's clause is listed explicitly (not regex-guessed) so a translation
+  // that drifts from this shape fails the build instead of silently shipping
+  // a CWS listing that still advertises YouTube downloads.
+  const YOUTUBE_CLAUSE_BY_LOCALE = {
+    en: ['Vimeo, YouTube & Wistia', 'Vimeo & Wistia'],
+    en_GB: ['Vimeo, YouTube & Wistia', 'Vimeo & Wistia'],
+    de: ['Vimeo-, YouTube- & Wistia-Lektionen', 'Vimeo- & Wistia-Lektionen'],
+    es: ['Vimeo, YouTube y Wistia', 'Vimeo y Wistia'],
+    es_419: ['Vimeo, YouTube y Wistia', 'Vimeo y Wistia'],
+    pt_BR: ['Vimeo, YouTube e Wistia', 'Vimeo e Wistia'],
+    fr: ['Vimeo, YouTube et Wistia', 'Vimeo et Wistia'],
+    id: ['Vimeo, YouTube & Wistia', 'Vimeo & Wistia'],
+    hi: ['Vimeo, YouTube और Wistia', 'Vimeo और Wistia'],
+    vi: ['Vimeo, YouTube & Wistia', 'Vimeo & Wistia'],
+    tr: ['Vimeo, YouTube ve Wistia', 'Vimeo ve Wistia'],
+    ru: ['Vimeo, YouTube и Wistia', 'Vimeo и Wistia'],
+    pl: ['Vimeo, YouTube i Wistia', 'Vimeo i Wistia'],
+    it: ['Vimeo, YouTube e Wistia', 'Vimeo e Wistia'],
+    nl: ['Vimeo-, YouTube- & Wistia-lessen', 'Vimeo- & Wistia-lessen'],
+  };
+  // Popup UI (planFeaturePlatforms) and the welcome page intro (welcomeSub) are
+  // only fully translated for a subset of locales — the rest fall back to `en`
+  // at runtime via chrome.i18n, which is already stripped below, so they don't
+  // need entries here.
+  const WELCOME_SUB_CLAUSE_BY_LOCALE = {
+    en: ['Loom, Vimeo, YouTube or Wistia', 'Loom, Vimeo or Wistia'],
+    de: ['Loom-, Vimeo-, YouTube- oder Wistia-Video', 'Loom-, Vimeo- oder Wistia-Video'],
+    es: ['Loom, Vimeo, YouTube o Wistia', 'Loom, Vimeo o Wistia'],
+    es_419: ['Loom, Vimeo, YouTube o Wistia', 'Loom, Vimeo o Wistia'],
+    pt_BR: ['Loom, Vimeo, YouTube ou Wistia', 'Loom, Vimeo ou Wistia'],
+    fr: ['Loom, Vimeo, YouTube ou Wistia', 'Loom, Vimeo ou Wistia'],
+  };
+  // Only needed where planFeaturePlatforms' wording differs from the store
+  // description's clause for that locale — German's description compounds
+  // "YouTube-" with a hyphen, but the popup's plain feature-list line doesn't.
+  const PLAN_FEATURE_CLAUSE_BY_LOCALE = {
+    de: ['Vimeo, YouTube & Wistia', 'Vimeo & Wistia'],
+  };
 
-  // 5. Drop "YouTube" from the popup pricing feature list.
+  // Only strips if present — safe to call for a clause that a prior pass in
+  // the same file already removed (e.g. extDescription and planFeaturePlatforms
+  // happen to share identical wording in most locales, but not in German,
+  // where planFeaturePlatforms stays unhyphenated).
+  function replaceIfPresent(text, find, replace) {
+    return text.includes(find) ? text.split(find).join(replace) : text;
+  }
+
+  const localesDir = path.join(dir, '_locales');
+  for (const code of fs.readdirSync(localesDir)) {
+    const clause = YOUTUBE_CLAUSE_BY_LOCALE[code];
+    if (!clause) fail(`no YouTube-clause mapping for new locale "${code}" — add one to YOUTUBE_CLAUSE_BY_LOCALE`);
+    const lp = path.join(localesDir, code, 'messages.json');
+    let loc = fs.readFileSync(lp, 'utf8');
+
+    // 4. Store listing description (every locale has this key).
+    loc = mustReplace(loc, clause[0], clause[1], `${code} store description`);
+    // 5. Popup pricing feature list, if this locale has full UI translation —
+    // usually the same clause text as the description (already stripped
+    // above), so this is a no-op except where the wording genuinely differs.
+    loc = replaceIfPresent(loc, clause[0], clause[1]);
+    const planClause = PLAN_FEATURE_CLAUSE_BY_LOCALE[code];
+    if (planClause) loc = replaceIfPresent(loc, planClause[0], planClause[1]);
+
+    // 6. Welcome page intro paragraph (only locales with full UI translation).
+    const wsClause = WELCOME_SUB_CLAUSE_BY_LOCALE[code];
+    if (wsClause) loc = mustReplace(loc, wsClause[0], wsClause[1], `${code} welcome intro`);
+
+    // Verify: no UI/listing key in this locale still mentions YouTube. Catches
+    // any clause wording that drifted out of sync with the maps above.
+    const messages = JSON.parse(loc);
+    for (const key of ['extDescription', 'planFeaturePlatforms', 'welcomeSub']) {
+      const msg = messages[key]?.message;
+      if (msg?.includes('YouTube')) fail(`${code}.${key} still mentions YouTube after CWS strip — update the clause maps in build.mjs`);
+    }
+
+    fs.writeFileSync(lp, loc);
+  }
+
+  // 5b. The <li data-i18n="planFeaturePlatforms"> element's static fallback
+  // text (shown for an instant before popup.js's applyI18n() overwrites it,
+  // and visible to anyone reading the shipped source) is hard-coded English —
+  // strip YouTube from it too so no CWS-artifact surface mentions it.
   const hp = path.join(dir, 'popup.html');
   let html = fs.readFileSync(hp, 'utf8');
   html = mustReplace(html,
     'Skool, Loom, Vimeo, YouTube &amp; Wistia',
     'Skool, Loom, Vimeo &amp; Wistia',
-    'popup feature line');
+    'popup feature line fallback text');
   fs.writeFileSync(hp, html);
 
-  // 6. Drop "YouTube" from the welcome page platform copy — the CWS build must
-  // not advertise saving YouTube videos anywhere a reviewer might look.
+  // 6b. Drop the YouTube chip from the welcome page platform list — a single
+  // shared element (chrome.i18n picks the locale text at runtime), so this
+  // only needs to happen once for the one welcome.html shipped.
   const wp = path.join(dir, 'welcome.html');
   let welcome = fs.readFileSync(wp, 'utf8');
   welcome = mustReplace(welcome,
-    'Loom, Vimeo, YouTube or Wistia',
-    'Loom, Vimeo or Wistia',
-    'welcome platform line');
-  welcome = mustReplace(welcome,
-    '<span class="chip">▶️ YouTube</span>',
+    '<span class="chip" data-i18n="chipYoutube">▶️ YouTube</span>',
     '',
     'welcome YouTube chip');
   fs.writeFileSync(wp, welcome);
