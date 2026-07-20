@@ -465,8 +465,22 @@ function resolvePlaylistUrl(url, baseUrl, parentQuery) {
   return abs;
 }
 
+// Mux/Fastly (stream.video.skool.com) rate-limits bursts of concurrent segment
+// requests with 429/503; those are "slow down," not permanent failures, so
+// retry with backoff (honoring Retry-After if the CDN sends one) instead of
+// letting one throttled segment kill the whole download.
+async function fetchWithRetry(url, { maxRetries = 4 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url);
+    if (r.ok || attempt >= maxRetries || (r.status !== 429 && r.status !== 503)) return r;
+    const retryAfter = parseFloat(r.headers.get('Retry-After'));
+    const delay = Number.isFinite(retryAfter) ? retryAfter * 1000 : Math.min(500 * 2 ** attempt, 8000) + Math.random() * 300;
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+}
+
 async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType }) {
-  const res = await fetch(playlistUrl);
+  const res = await fetchWithRetry(playlistUrl);
   if (!res.ok) throw new Error(`Playlist fetch failed: ${res.status}`);
   const text = await res.text();
   const baseUrl = playlistUrl.substring(0, playlistUrl.lastIndexOf('/') + 1);
@@ -475,7 +489,7 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   const blobs = [];
   const mapMatch = text.match(/#EXT-X-MAP:URI="([^"]+)"/);
   if (mapMatch) {
-    const r = await fetch(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery));
+    const r = await fetchWithRetry(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery));
     if (!r.ok) throw new Error(`Init segment fetch failed: ${r.status}`);
     blobs.push(await r.blob());
   }
@@ -487,12 +501,14 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   }
   if (!segments.length) throw new Error('No segments in playlist');
 
-  const BATCH = 20;
+  // Smaller than the old BATCH=20 — a burst that size is what triggered the
+  // CDN's rate limit in the first place.
+  const BATCH = 10;
   let bytes = blobs.reduce((n, b) => n + b.size, 0);
   for (let i = 0; i < segments.length; i += BATCH) {
     if (isCancelled?.()) throw new Error('Cancelled');
     const batch = segments.slice(i, i + BATCH);
-    const parts = await Promise.all(batch.map(u => fetch(u).then(r => {
+    const parts = await Promise.all(batch.map(u => fetchWithRetry(u).then(r => {
       if (!r.ok) throw new Error(`Segment fetch failed: HTTP ${r.status}`);
       return r.blob();
     })));
