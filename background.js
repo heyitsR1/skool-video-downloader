@@ -193,7 +193,7 @@ async function purgeBlobCache() { try { await caches.delete('video-blobs'); } ca
   try {
     const installId = await getInstallId();
     const v = chrome.runtime.getManifest().version;
-    chrome.runtime.setUninstallURL(`https://tailsgate.com/skool-video-downloader/uninstall?v=${v}&id=${encodeURIComponent(installId)}`);
+    chrome.runtime.setUninstallURL(`https://skoolvideodownload.com/skool-video-downloader/uninstall?v=${v}&id=${encodeURIComponent(installId)}`);
   } catch {}
 })();
 
@@ -330,7 +330,7 @@ async function getVersionStatus() {
     channel,
     latest: latest || null,
     updateAvailable: !!(latest && cmpVersions(latest, current) > 0),
-    url: versionInfo?.url || 'https://tailsgate.com/skool-video-downloader/updates',
+    url: versionInfo?.url || 'https://skoolvideodownload.com/skool-video-downloader/updates',
     message: versionInfo?.message || null
   };
 }
