@@ -33,6 +33,32 @@ async function svdLog(context, message) {
   } catch { /* logging must never break anything */ }
 }
 
+// Skool-native (Mux) masters carry a signed-playback JWT in ?token=. Decoding
+// its `exp` costs nothing and turns an otherwise ambiguous 403 report into an
+// answer: a stale token and a missing Referer header fail identically from the
+// user's side, and only the expiry timestamp tells them apart.
+function jwtExpFromUrl(url) {
+  try {
+    const token = new URL(url).searchParams.get('token');
+    const payload = token && token.split('.')[1];
+    if (!payload) return null;
+    const { exp } = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+    return exp ? new Date(exp * 1000) : null;
+  } catch { return null; }
+}
+
+// "exp 09:41Z (in 24m)" / "exp 09:41Z (EXPIRED 3m ago)" — relative to now, since
+// what matters in a report is whether the token had already lapsed.
+// Accepts a Date or the ISO string form, since the expiry rides along on the
+// quality object through the popup and back (JSON, so Dates don't survive).
+function describeExpiry(exp) {
+  const d = exp instanceof Date ? exp : (exp ? new Date(exp) : null);
+  if (!d || isNaN(d)) return null;
+  const mins = Math.round((d - Date.now()) / 60000);
+  const when = d.toISOString().slice(11, 16) + 'Z';
+  return `exp ${when} (${mins >= 0 ? `in ${mins}m` : `EXPIRED ${-mins}m ago`})`;
+}
+
 // tabId -> { videos: Map(key -> videoEntry) }  captured streams / embeds per tab
 const tabVideos = new Map();
 
@@ -64,8 +90,12 @@ const registryReady = (async () => {
   } catch { /* cold start with an empty registry = pre-persistence behavior */ }
 })();
 
-// Global concurrent download queue (max 3 running, rest wait).
-const MAX_CONCURRENT = 3;
+// Global download queue. Runs one job at a time: several HLS jobs in parallel
+// each fire their own batch of segment requests at the same video.skool.com
+// Fastly edge, which is exactly the burst that rate-limits us (see the BATCH
+// note in downloadRendition). Serialising costs nothing but wall-clock on a
+// queue the user already expects to be a queue.
+const MAX_CONCURRENT = 1;
 const downloadQueue = [];        // pending job descriptors
 const activeJobs = new Map();    // jobId -> { cancel, meta }
 const finishedJobs = [];         // recently done/failed/cancelled, kept ~45s for the manager UI
@@ -93,7 +123,8 @@ function addVideo(tabId, entry) {
     // src names the scanner that produced the detection (dom-iframe/json-md/
     // json-text from the content script, wire for webRequest captures) — the
     // first thing to look at when a report says a phantom video was listed.
-    svdLog('detect', `+${entry.platform} via ${entry.src || 'wire'} (${entry.key.slice(0, 80)})`);
+    const expiry = describeExpiry(jwtExpFromUrl(entry.url || ''));
+    svdLog('detect', `+${entry.platform} via ${entry.src || 'wire'} (${entry.key.slice(0, 80)})${expiry ? ` ${expiry}` : ''}`);
   } else {
     // Merge — a later webRequest capture may carry headers a page-props entry lacked.
     Object.assign(t.videos.get(entry.key), entry);
@@ -433,6 +464,19 @@ function sendToOffscreen(message) {
 }
 
 // ── DNR header rules (re-attach Referer/Origin for token-gated CDNs) ──────────
+// Rule IDs must be unique per *concurrent holder*, not per tab. Downloads used
+// to key off tabId, which was safe only while one download could exist per tab;
+// once the queue could run several, two jobs in one tab shared an ID and the
+// first to finish removed the rule out from under the other — its next segment
+// went out with no Referer and the CDN 403'd it mid-download. Jobs key off the
+// unique jobId now; resolution keeps its own range so a picker opened during a
+// download can't clobber the running job either.
+const RULE_RANGE_RESOLVE = 900000;   // 900000–989999
+const RULE_RANGE_DOWNLOAD = 1000000; // 1000000–1099999
+const downloadRuleId = (jobId) => RULE_RANGE_DOWNLOAD + (jobId % 100000);
+const resolveRuleId = (tabId) =>
+  RULE_RANGE_RESOLVE + (tabId > 0 ? tabId % 90000 : Math.floor(Math.random() * 90000));
+
 async function applyHeaderRules(ruleId, sampleUrl, headers) {
   if (!headers || (!headers.Referer && !headers.Origin)) return false;
   const domain = new URL(sampleUrl).hostname;
@@ -702,7 +746,7 @@ async function runJob({ jobId, quality, filename, tabId }) {
 
     // Re-attach Referer/Origin for token-gated HLS/CDN fetches.
     if (quality.headers && (quality.headers.Referer || quality.headers.Origin)) {
-      ruleId = (tabId && tabId > 0) ? tabId : Math.floor(Math.random() * 1e6) + 1000;
+      ruleId = downloadRuleId(jobId);
       await applyHeaderRules(ruleId, quality.videoUrl, quality.headers);
     }
 
@@ -758,7 +802,9 @@ async function runJob({ jobId, quality, filename, tabId }) {
       broadcast({ type: 'QUEUE_CANCELLED', jobId });
     } else {
       meta.phase = 'error'; meta.error = e.message;
-      svdLog('download', `${quality.platform || 'video'} "${String(filename).slice(0, 60)}": ${e.message}`);
+      const expiry = describeExpiry(quality.tokenExp);
+      svdLog('download', `${quality.platform || 'video'} "${String(filename).slice(0, 60)}": ${e.message}`
+        + ` @${meta.percent}%${expiry ? ` ${expiry}` : ''}`);
       recordFinished(meta, 'error');
       updateJob(jobId, { phase: 'error', error: e.message });
       broadcast({ type: 'QUEUE_ERROR', jobId, error: e.message });
@@ -818,7 +864,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         const host = refererHosts[video.platform];
         let ruleId = null;
         if (host && video.pageUrl && !video.url) {
-          ruleId = 900000 + (tabId > 0 ? tabId % 90000 : Math.floor(Math.random() * 90000));
+          ruleId = resolveRuleId(tabId);
           await applyHeaderRules(ruleId, `https://${host}/`, { Referer: video.pageUrl });
         } else if (video.url) {
           // Wire-captured HLS (Skool-native Mux, or a loom/vimeo master caught
@@ -830,7 +876,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             ? video.headers
             : { Referer: video.pageUrl || 'https://www.skool.com/', Origin: 'https://www.skool.com' };
           video.headers = headers; // ride onto resolved qualities → download step re-applies
-          ruleId = 900000 + (tabId > 0 ? tabId % 90000 : Math.floor(Math.random() * 90000));
+          ruleId = resolveRuleId(tabId);
           await applyHeaderRules(ruleId, video.url, headers);
         }
 
@@ -839,8 +885,12 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           if (title && !video.title) video.title = title;
           // Stamp platform + carry the page Referer onto each quality so the
           // download step re-injects it for token/domain-gated CDN fetches.
+          const tokenExp = jwtExpFromUrl(video.url || '');
           qualities.forEach(q => {
             q.platform = video.platform;
+            // Carried so a download failure can report whether the playback
+            // token had already lapsed by the time we hit the CDN.
+            if (tokenExp) q.tokenExp = tokenExp.toISOString();
             if (!q.headers && video.pageUrl && video.platform !== 'youtube') q.headers = { Referer: video.pageUrl };
           });
           sendResponse({ ok: true, qualities, title: video.title });
