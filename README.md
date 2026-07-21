@@ -40,7 +40,7 @@ node scripts/build.mjs   # → dist/*.zip
 
 ## Support
 
-Questions or issues → https://tailsgate.com/skool-video-downloader
+Questions or issues → https://skoolvideodownload.com/skool-video-downloader
 
 ## License
 

@@ -8,7 +8,9 @@
 // so — like the Whop downloader — we open the hosted popup-mode checkout URL
 // directly. The /plan/ segment takes the plan id (not the pricing id); one
 // pricing object under that plan carries all three cycles ($9.99/mo,
-// $49.99/yr, $79.99 lifetime) and billing_cycle preselects which it opens on.
+// $79.99/yr, $99.99 lifetime) and billing_cycle preselects which it opens on.
+// NOTE: the actual charged amount lives on Freemius's pricing object (id
+// 72637) — update it there too, this comment/UI text doesn't drive billing.
 const FS_PRODUCT_ID = 33457;
 const FS_PLAN_ID = 54961;
 const CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PLAN_ID}/`;
@@ -25,7 +27,7 @@ const PLATFORM_ICON = {
 // in-browser YouTube downloads are dead for every extension). The guide page
 // reads ?v= and pre-fills a copy-paste yt-dlp command for that exact video.
 // The extension links only to our own page, keeping the shipped artifact clean.
-const YT_GUIDE_URL = 'https://tailsgate.com/skool-video-downloader/youtube';
+const YT_GUIDE_URL = 'https://skoolvideodownload.com/skool-video-downloader/youtube';
 
 let activeTab = null;
 let currentVideos = [];

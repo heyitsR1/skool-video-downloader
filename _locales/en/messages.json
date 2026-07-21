@@ -102,7 +102,7 @@
   "planCtaGoUnlimited": { "message": "Go unlimited" },
   "planReassure": { "message": "Secure checkout · Instant access" },
   "planAnnualName": { "message": "Annual" },
-  "planAnnualSub": { "message": "save 58% vs monthly" },
+  "planAnnualSub": { "message": "save 33% vs monthly" },
   "planCtaGetAnnual": { "message": "Get annual" },
   "planLifetimeName": { "message": "Lifetime" },
   "planLifetimeSub": { "message": "pay once, own forever" },
