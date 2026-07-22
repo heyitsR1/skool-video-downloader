@@ -38,6 +38,31 @@ sideload build (this one) and the Chrome Web Store build (YouTube stripped):
 node scripts/build.mjs   # → dist/*.zip
 ```
 
+### Releasing
+
+```bash
+# 1. bump "version" in manifest.json
+node scripts/build.mjs
+git commit -am "vX.Y.Z: ..." && git push
+gh release create vX.Y.Z dist/skool-video-downloader-full-vX.Y.Z.zip \
+  --title "vX.Y.Z — full (sideload) build"
+node scripts/publish-version.mjs          # ← tells existing users an update exists
+```
+
+That last step is not optional. The popup's update banner reads its version
+from the Worker's KV config, so skipping it means every sideload user is told
+they are current no matter how many releases have shipped.
+
+The Chrome Web Store zip is a separate manual upload to the dashboard. Once
+that listing is actually **live** (not just submitted), publish its version too:
+
+```bash
+node scripts/publish-version.mjs --cws X.Y.Z
+```
+
+Never run `--cws` ahead of the store — it banners users about a build they
+cannot install yet.
+
 ## Support
 
 Questions or issues → https://skoolvideodownload.com/skool-video-downloader
