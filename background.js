@@ -513,14 +513,36 @@ function resolvePlaylistUrl(url, baseUrl, parentQuery) {
 // requests with 429/503; those are "slow down," not permanent failures, so
 // retry with backoff (honoring Retry-After if the CDN sends one) instead of
 // letting one throttled segment kill the whole download.
+//
+// The same goes for the rest of the transient CDN family — Loom's CloudFront
+// front-end returns 504 (and occasionally 500/502) when its origin is slow on
+// a cold segment. Treating those as fatal throws away every segment already
+// downloaded over one blip, so they retry too. 4xx other than 408/429 stay
+// fatal: those mean expired signature or wrong URL, and retrying can't help.
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+
 async function fetchWithRetry(url, { maxRetries = 4 } = {}) {
   for (let attempt = 0; ; attempt++) {
-    const r = await fetch(url);
-    if (r.ok || attempt >= maxRetries || (r.status !== 429 && r.status !== 503)) return r;
-    const retryAfter = parseFloat(r.headers.get('Retry-After'));
-    const delay = Number.isFinite(retryAfter) ? retryAfter * 1000 : Math.min(500 * 2 ** attempt, 8000) + Math.random() * 300;
-    await new Promise(resolve => setTimeout(resolve, delay));
+    let r;
+    try {
+      r = await fetch(url);
+    } catch (e) {
+      // A dropped connection mid-download rejects rather than returning a
+      // response; it's just as transient as a 504, so give it the same budget.
+      if (attempt >= maxRetries) throw e;
+      await backoff(attempt);
+      continue;
+    }
+    if (r.ok || attempt >= maxRetries || !RETRYABLE_STATUS.has(r.status)) return r;
+    await backoff(attempt, parseFloat(r.headers.get('Retry-After')));
   }
+}
+
+function backoff(attempt, retryAfterSec) {
+  const delay = Number.isFinite(retryAfterSec)
+    ? retryAfterSec * 1000
+    : Math.min(500 * 2 ** attempt, 8000) + Math.random() * 300;
+  return new Promise(resolve => setTimeout(resolve, delay));
 }
 
 async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType }) {
