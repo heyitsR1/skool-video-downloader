@@ -218,7 +218,11 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 chrome.runtime.onStartup.addListener(purgeBlobCache);
 
-async function purgeBlobCache() { try { await caches.delete('video-blobs'); } catch {} }
+// Named here rather than beside putBlobs because purgeBlobCache runs at load
+// time (onInstalled/onStartup), before a const declared further down would be
+// initialised.
+const BLOB_CACHE = 'video-blobs';
+async function purgeBlobCache() { try { await caches.delete(BLOB_CACHE); } catch {} }
 
 (async () => {
   try {
@@ -545,9 +549,24 @@ function backoff(attempt, retryAfterSec) {
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
+// Reaching here means fetchWithRetry already spent its whole backoff budget, so
+// a 429 isn't a blip — the CDN is throttling this IP hard, usually after several
+// downloads back to back. "HTTP 429" told the user nothing actionable; waiting
+// is the actual fix, so say that. Expired signatures (403) are the other status
+// that shows up in reports and have their own fix: reload and press play again.
+function segmentFailureMessage(status) {
+  if (status === 429 || status === 503) {
+    return 'Skool\'s video server is rate-limiting this connection. Wait a few minutes and start the download again — the part already downloaded isn\'t kept, so it will restart from the beginning.';
+  }
+  if (status === 403 || status === 401) {
+    return 'The video link expired mid-download. Reload the lesson page, press play, and download again.';
+  }
+  return `Segment fetch failed: HTTP ${status}`;
+}
+
 async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType }) {
   const res = await fetchWithRetry(playlistUrl);
-  if (!res.ok) throw new Error(`Playlist fetch failed: ${res.status}`);
+  if (!res.ok) throw new Error(segmentFailureMessage(res.status));
   const text = await res.text();
   const baseUrl = playlistUrl.substring(0, playlistUrl.lastIndexOf('/') + 1);
   const parentQuery = (playlistUrl.split('?')[1] || '');
@@ -556,7 +575,7 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   const mapMatch = text.match(/#EXT-X-MAP:URI="([^"]+)"/);
   if (mapMatch) {
     const r = await fetchWithRetry(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery));
-    if (!r.ok) throw new Error(`Init segment fetch failed: ${r.status}`);
+    if (!r.ok) throw new Error(segmentFailureMessage(r.status));
     blobs.push(await r.blob());
   }
 
@@ -575,7 +594,7 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
     if (isCancelled?.()) throw new Error('Cancelled');
     const batch = segments.slice(i, i + BATCH);
     const parts = await Promise.all(batch.map(u => fetchWithRetry(u).then(r => {
-      if (!r.ok) throw new Error(`Segment fetch failed: HTTP ${r.status}`);
+      if (!r.ok) throw new Error(segmentFailureMessage(r.status));
       return r.blob();
     })));
     blobs.push(...parts);
@@ -606,12 +625,63 @@ async function downloadDirect(url, { onProgress, isCancelled, mimeType }) {
   return new Blob(chunks, { type: mimeType || 'video/mp4' });
 }
 
+// ── Blob handoff to the offscreen document ────────────────────────────────────
+//
+// The finished video crosses into the offscreen document through CacheStorage,
+// which means every save is a multi-hundred-megabyte disk write. When that
+// write can't land, Chrome does NOT throw the spec'd QuotaExceededError — it
+// throws "Failed to execute 'put' on 'Cache': Unexpected internal error", which
+// is what users were reporting. Two things cause it:
+//
+//   1. Orphaned entries. A cancelled job, a crashed service worker, or a merge
+//      that threw leaves its blobs behind; purgeBlobCache only runs on install
+//      and browser startup, so a browser left open for days accumulates them
+//      until the origin's share of the quota is gone.
+//   2. A genuinely full disk.
+//
+// Purge-and-retry-once clears (1) — it's safe because offscreenLock serialises
+// every caller, so no other job has live entries here. If the retry also fails
+// it's (2), and the user needs to hear about disk space, not Chrome internals.
+async function putBlobs(entries) {
+  let cache = await caches.open(BLOB_CACHE);
+  try {
+    await Promise.all(entries.map(([key, blob]) => cache.put(key, new Response(blob))));
+    return cache;
+  } catch (first) {
+    await purgeBlobCache();
+    cache = await caches.open(BLOB_CACHE);
+    try {
+      await Promise.all(entries.map(([key, blob]) => cache.put(key, new Response(blob))));
+      return cache;
+    } catch (second) {
+      const err = new Error(await outOfSpaceMessage(entries));
+      err.cause = second;
+      svdLog('cache', `blob put failed after purge: ${first?.message || first}`);
+      throw err;
+    }
+  }
+}
+
+async function outOfSpaceMessage(entries) {
+  const needed = entries.reduce((n, [, blob]) => n + blob.size, 0);
+  let detail = '';
+  try {
+    const { quota = 0, usage = 0 } = await navigator.storage.estimate();
+    const free = Math.max(0, quota - usage);
+    detail = ` It needs about ${formatGB(needed)} of free space and Chrome currently has ${formatGB(free)} available.`;
+  } catch { /* estimate() is best-effort; the advice below stands without it */ }
+  return `Couldn't save the video — your disk is out of space.${detail} Free up some room and download again.`;
+}
+
+function formatGB(bytes) {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
 // ── Blob saving via offscreen anchor ──────────────────────────────────────────
 function saveBlob(blob, filename) {
   return withOffscreen(async () => {
     const key = `https://skool-merge.local/save/${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const cache = await caches.open('video-blobs');
-    await cache.put(key, new Response(blob));
+    const cache = await putBlobs([[key, blob]]);
     try {
       await ensureOffscreenDocument();
       const result = await sendToOffscreen({ type: 'CREATE_BLOB_URL', key });
@@ -668,6 +738,39 @@ function saveFailureMessage(state, error) {
 }
 
 // ── Offscreen merge of two blobs ──────────────────────────────────────────────
+// ffmpeg-core.wasm declares +simd128 as a *required* target feature, so an
+// engine without Wasm SIMD rejects the whole module at compile time — the merge
+// can never succeed on that machine, no matter the video. V8 only enables SIMD
+// on x86 when the CPU reports SSE4.1, so this trips on pre-2008 Intel/pre-2011
+// AMD and, more often, on VMs and remote desktops whose hypervisor masks the
+// CPU feature bits. Detect it up front instead of downloading the whole video
+// and dying at 82% with a raw emscripten abort.
+// The module below is a minimal valid one whose body is `v128.const 0; i8x16.popcnt`.
+let simdSupported = null;
+function wasmSimdSupported() {
+  if (simdSupported === null) {
+    try {
+      simdSupported = WebAssembly.validate(new Uint8Array([
+        0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123,
+        3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11
+      ]));
+    } catch { simdSupported = false; }
+  }
+  return simdSupported;
+}
+
+// Whether a quality has to be merged to produce one playable file.
+function needsMerge(quality) {
+  return quality.kind === 'merge' || (quality.kind === 'hls' && !!quality.audioUrl);
+}
+
+// Deliberately plain-English and action-shaped: the user who hits this can't fix
+// their CPU, so the message's only job is to point them at the buttons that work.
+const NO_SIMD_MESSAGE =
+  "This computer can't merge video and audio in the browser — its processor is missing an " +
+  'instruction set Chrome needs (common on older CPUs and on virtual machines). ' +
+  'Use the free “Video only” and “Audio only” buttons instead — they always work.';
+
 const MERGE_TIMEOUT_MS = 5 * 60 * 1000;
 function withTimeout(promise, ms, message) {
   let timer;
@@ -680,8 +783,7 @@ function mergeAndSave(videoBlob, audioBlob, filename, tabId) {
     const jobId = Date.now();
     const videoKey = `https://skool-merge.local/${jobId}/video`;
     const audioKey = `https://skool-merge.local/${jobId}/audio`;
-    const cache = await caches.open('video-blobs');
-    await Promise.all([cache.put(videoKey, new Response(videoBlob)), cache.put(audioKey, new Response(audioBlob))]);
+    const cache = await putBlobs([[videoKey, videoBlob], [audioKey, audioBlob]]);
     try {
       await ensureOffscreenDocument();
       const result = await withTimeout(
@@ -722,10 +824,12 @@ function updateJob(jobId, patch) {
   broadcast({ type: 'QUEUE_UPDATE', jobId, patch });
 }
 
-function enqueueDownload({ quality, filename, tabId, platform, label }) {
+// mode: undefined = normal combined download (merged, costs a credit);
+// 'video' | 'audio' = single-rendition free download (no merge, no credit).
+function enqueueDownload({ quality, filename, tabId, platform, label, mode }) {
   const jobId = ++jobSeq;
-  const meta = { filename, platform, label, percent: 0, phase: 'queued', speed: '' };
-  downloadQueue.push({ jobId, quality, filename, tabId, meta });
+  const meta = { filename, platform, label, mode, percent: 0, phase: 'queued', speed: '' };
+  downloadQueue.push({ jobId, quality, filename, tabId, mode, meta });
   broadcast({ type: 'QUEUE_ADD', item: { jobId, ...meta, state: 'queued' } });
   pump();
   return jobId;
@@ -738,9 +842,9 @@ function pump() {
   }
 }
 
-async function runJob({ jobId, quality, filename, tabId }) {
+async function runJob({ jobId, quality, filename, tabId, mode }) {
   const cancelled = [false];
-  const meta = { jobId, filename, platform: quality.platform, percent: 0, phase: 'starting', speed: '' };
+  const meta = { jobId, filename, platform: quality.platform, mode, percent: 0, phase: 'starting', speed: '' };
   activeJobs.set(jobId, { cancel: () => { cancelled[0] = true; }, meta });
   const isCancelled = () => cancelled[0];
 
@@ -766,13 +870,40 @@ async function runJob({ jobId, quality, filename, tabId }) {
   try {
     updateJob(jobId, { phase: 'downloading' });
 
-    // Re-attach Referer/Origin for token-gated HLS/CDN fetches.
+    // Bail before spending bandwidth on a merge this machine can't perform.
+    if (!mode && needsMerge(quality) && !wasmSimdSupported()) throw new Error(NO_SIMD_MESSAGE);
+
+    // Re-attach Referer/Origin for token-gated HLS/CDN fetches. The rule's URL
+    // filter is derived from the sample URL's host, so it has to be a URL this
+    // job will actually fetch — an audio-only job on a merge-kind quality can
+    // have its audio on a different host than the video, and scoping the rule
+    // to videoUrl there would leave the real fetch unauthenticated (403).
     if (quality.headers && (quality.headers.Referer || quality.headers.Origin)) {
       ruleId = downloadRuleId(jobId);
-      await applyHeaderRules(ruleId, quality.videoUrl, quality.headers);
+      await applyHeaderRules(ruleId, (mode === 'audio' && quality.audioUrl) || quality.videoUrl, quality.headers);
     }
 
-    if (quality.kind === 'mp4') {
+    // Free single-track path: fetch only the requested rendition and save it as
+    // is. Never touches ffmpeg, so it works on CPUs without Wasm SIMD and on
+    // videos too long for the in-browser merger. HLS renditions are playlists
+    // (segment-by-segment); merge-kind ones are plain files.
+    if (mode === 'video' || mode === 'audio') {
+      const url = mode === 'audio' ? quality.audioUrl : quality.videoUrl;
+      if (!url) {
+        throw new Error(mode === 'audio'
+          ? "This video's audio is inside the video file — use “Video only”, it already has sound."
+          : 'No separate video track for this quality.');
+      }
+      const fetchOne = quality.kind === 'hls' ? downloadRendition : downloadDirect;
+      const blob = await fetchOne(url, {
+        isCancelled, mimeType: mode === 'audio' ? 'audio/mp4' : 'video/mp4',
+        onProgress: (d, t, b) => setPct(t ? (d / t) * 95 : 50, 'downloading', b)
+      });
+      if (isCancelled()) throw new Error('Cancelled');
+      setPct(97, 'saving');
+      await saveBlob(blob, mode === 'audio' ? `${filename}.m4a` : `${filename}.mp4`);
+
+    } else if (quality.kind === 'mp4') {
       const blob = await downloadDirect(quality.videoUrl, {
         isCancelled, mimeType: 'video/mp4',
         onProgress: (done, total, bytes) => setPct(total ? (done / total) * 95 : 50, 'downloading', bytes)
@@ -814,7 +945,8 @@ async function runJob({ jobId, quality, filename, tabId }) {
 
     meta.percent = 100; meta.phase = 'done'; meta.speed = '';
     updateJob(jobId, { percent: 100, phase: 'done', speed: '' });
-    await decrementCredit();
+    // Video-only / audio-only are free forever — they never spend a credit.
+    if (!mode) await decrementCredit();
     recordFinished(meta, 'done');
     broadcast({ type: 'QUEUE_DONE', jobId });
 
@@ -927,12 +1059,18 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
     case 'START_DOWNLOAD':
       (async () => {
-        const { allowed, reason } = await canDownload();
-        // Log the denial — a free user hitting the paywall then filing a "no
-        // details" problem report is otherwise indistinguishable from a bug.
-        if (!allowed) { svdLog('license', `download blocked: ${reason}`); sendResponse({ ok: false, reason }); return; }
+        // Video-only / audio-only bypass the weekly limit entirely — they're the
+        // free-forever offer, and gating them would make the claim a lie.
+        const free = req.mode === 'video' || req.mode === 'audio';
+        if (!free) {
+          const { allowed, reason } = await canDownload();
+          // Log the denial — a free user hitting the paywall then filing a "no
+          // details" problem report is otherwise indistinguishable from a bug.
+          if (!allowed) { svdLog('license', `download blocked: ${reason}`); sendResponse({ ok: false, reason }); return; }
+        }
         const jobId = enqueueDownload({
-          quality: req.quality, filename: req.filename, tabId, platform: req.quality.platform, label: req.label
+          quality: req.quality, filename: req.filename, tabId, platform: req.quality.platform, label: req.label,
+          mode: free ? req.mode : undefined
         });
         sendResponse({ ok: true, jobId });
       })();

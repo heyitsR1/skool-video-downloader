@@ -7,15 +7,16 @@
 // pricing 72637). MV3 popup CSP forbids loading Freemius's checkout.min.js,
 // so — like the Whop downloader — we open the hosted popup-mode checkout URL
 // directly. The /plan/ segment takes the plan id (not the pricing id); one
-// pricing object under that plan carries all three cycles ($9.99/mo,
-// $79.99/yr, $99.99 lifetime) and billing_cycle preselects which it opens on.
+// pricing object under that plan carries the cycles ($9.99/mo, $99.99 lifetime)
+// and billing_cycle preselects which it opens on. The annual cycle still exists
+// on the Freemius pricing object but is deliberately not offered anywhere in the
+// UI — it's monthly or one-time, nothing in between.
 // NOTE: the actual charged amount lives on Freemius's pricing object (id
 // 72637) — update it there too, this comment/UI text doesn't drive billing.
 const FS_PRODUCT_ID = 33457;
 const FS_PLAN_ID = 54961;
 const CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PLAN_ID}/`;
 const CHECKOUT_MONTHLY = `${CHECKOUT}?billing_cycle=monthly`;
-const CHECKOUT_ANNUAL = `${CHECKOUT}?billing_cycle=annual`;
 const CHECKOUT_LIFETIME = `${CHECKOUT}?billing_cycle=lifetime`;
 
 const PLATFORM_ICON = {
@@ -211,8 +212,15 @@ function attachThumb(tile, src) {
 // YouTube's server-side gating breaks in-browser downloads in both builds;
 // show the handoff notice (guide page + pre-filled command) instead of
 // resolving qualities.
+// Plan chrome (credits bar, upgrade CTA, license box) belongs to the video list,
+// not to a download in progress. See .is-picking in popup.css.
+function setPicking(on) {
+  document.querySelector('.popup').classList.toggle('is-picking', on);
+}
+
 function showYouTubePolicy(video) {
   ytGuideVideoId = video?.sourceId || null;
+  setPicking(true);
   document.getElementById('videos').classList.add('hidden');
   document.getElementById('status-text').classList.add('hidden');
   document.getElementById('hint-text').classList.add('hidden');
@@ -220,6 +228,7 @@ function showYouTubePolicy(video) {
 }
 
 function showVideoList() {
+  setPicking(false);
   document.getElementById('quality-view').classList.add('hidden');
   document.getElementById('yt-policy-view').classList.add('hidden');
   document.getElementById('videos').classList.remove('hidden');
@@ -230,6 +239,7 @@ function showVideoList() {
 // ── Quality picker ────────────────────────────────────────────────────────────
 async function openQuality(video) {
   if (video.platform === 'youtube') { showYouTubePolicy(video); return; }
+  setPicking(true);
   document.getElementById('videos').classList.add('hidden');
   document.getElementById('status-text').classList.add('hidden');
   document.getElementById('hint-text').classList.add('hidden');
@@ -242,6 +252,12 @@ async function openQuality(video) {
   const errEl = document.getElementById('quality-error');
   const nameInput = document.getElementById('filename-input');
   errEl.classList.add('hidden');
+  // Back to the resolving state: the quality list carries the "resolving" text,
+  // and the action step stays hidden until we know whether this video even has a
+  // choice to offer. Otherwise the previous video's buttons linger over a
+  // still-resolving list and fire against stale URLs.
+  document.getElementById('quality-step-back').classList.add('hidden');
+  showQualityStep(true);
   thumbEl.innerHTML = '';
   if (video.thumb) { attachThumb(thumbEl, video.thumb); thumbEl.classList.remove('hidden'); }
   else thumbEl.classList.add('hidden');
@@ -252,6 +268,9 @@ async function openQuality(video) {
   if (!res?.ok) {
     titleEl.textContent = video.title || video.label || video.platform;
     listEl.innerHTML = '';
+    // Both steps off — a "Choose quality" heading over an empty list under a red
+    // error is just noise.
+    document.getElementById('quality-step').classList.add('hidden');
     showError(errEl, res?.error || chrome.i18n.getMessage('qualityErrorGeneric'));
     return;
   }
@@ -274,13 +293,72 @@ async function openQuality(video) {
     btn.addEventListener('click', () => startDownload(q, nameInput.value.trim() || sanitizeName(title), video));
     listEl.appendChild(btn);
   });
+
+  renderActionStep(res.qualities, video, () => nameInput.value.trim() || sanitizeName(title));
 }
 
-async function startDownload(quality, filename, video) {
+// The picker is two steps: pick *what kind of file* you want, then pick the
+// quality for it. Quality is a detail of the combined download, so asking for it
+// up front — next to two buttons that don't use it — was the confusing part.
+function showQualityStep(show) {
+  document.getElementById('action-step').classList.toggle('hidden', show);
+  document.getElementById('quality-step').classList.toggle('hidden', !show);
+}
+
+// Step 1. Only meaningful when the stream ships video and audio as separate
+// renditions: a muxed MP4 has nothing to split, so "combined" and "video only"
+// would be the same download under two names. In that case skip straight to the
+// quality list, which is then the entire decision.
+function renderActionStep(qualities, video, getFilename) {
+  const stepBack = document.getElementById('quality-step-back');
+  const btnVideo = document.getElementById('btn-video-only');
+  const btnAudio = document.getElementById('btn-audio-only');
+
+  // Best rendition that carries a separate audio track (list is sorted best-first).
+  const q = qualities.find((x) => x.audioUrl);
+  if (!q) { stepBack.classList.add('hidden'); showQualityStep(true); return; }
+
+  // Every quality with a separate audio track has to be merged, so if the
+  // engine can't merge, the combined button above is dead on this machine.
+  const note = document.getElementById('no-simd-note');
+  note.textContent = chrome.i18n.getMessage('noSimdNote');
+  note.classList.toggle('hidden', wasmSimdSupported());
+
+  btnVideo.innerHTML = escapeHtml(chrome.i18n.getMessage('videoOnlyBtn')) +
+    (q.label ? `<span class="btn__meta">${escapeHtml(q.label)}</span>` : '');
+  btnAudio.textContent = chrome.i18n.getMessage('audioOnlyBtn');
+  btnVideo.onclick = () => startDownload(q, getFilename(), video, 'video');
+  btnAudio.onclick = () => startDownload(q, getFilename(), video, 'audio');
+
+  document.getElementById('btn-combined').onclick = () => {
+    stepBack.classList.remove('hidden');
+    showQualityStep(true);
+  };
+  stepBack.onclick = () => { showQualityStep(false); };
+  showQualityStep(false);
+}
+
+// Same probe the service worker runs (background.js). ffmpeg-core.wasm requires
+// +simd128, so an engine without it can never merge — say so before the user
+// spends a download finding out.
+let simdSupported = null;
+function wasmSimdSupported() {
+  if (simdSupported === null) {
+    try {
+      simdSupported = WebAssembly.validate(new Uint8Array([
+        0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123,
+        3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11
+      ]));
+    } catch { simdSupported = false; }
+  }
+  return simdSupported;
+}
+
+async function startDownload(quality, filename, video, mode) {
   const errEl = document.getElementById('quality-error');
   errEl.classList.add('hidden');
 
-  const res = await send({ type: 'START_DOWNLOAD', tabId: activeTab?.id, quality, filename, label: video.label });
+  const res = await send({ type: 'START_DOWNLOAD', tabId: activeTab?.id, quality, filename, label: video.label, mode });
   if (!res?.ok) {
     if (res?.reason === 'weekly_limit') {
       openPricingModal(chrome.i18n.getMessage('weeklyLimitMsg'));
@@ -400,7 +478,6 @@ function openPricingModal(subtitle) {
 function closePricingModal() { document.getElementById('pricing-modal').classList.add('hidden'); }
 function setupPricingModal() {
   document.getElementById('buy-monthly').href = CHECKOUT_MONTHLY;
-  document.getElementById('buy-annual').href = CHECKOUT_ANNUAL;
   document.getElementById('buy-lifetime').href = CHECKOUT_LIFETIME;
   document.querySelectorAll('#pricing-modal [data-close]').forEach(el => el.addEventListener('click', closePricingModal));
 }
