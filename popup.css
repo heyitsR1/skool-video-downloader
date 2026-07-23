@@ -134,6 +134,51 @@ body {
 .btn:active { transform: scale(.99); }
 .btn--outline { background: #fff; border: 1.5px solid var(--accent); color: var(--accent-strong); }
 .btn--outline:hover { background: var(--accent-soft); }
+/* The one obvious action on the picker: a filled amber button that reads as the
+   default, with the trade-off spelled out under the label instead of in a note
+   somewhere else. */
+.btn--primary { background: var(--grad); color: #fff; line-height: 1.3; }
+.btn--primary:hover { filter: brightness(1.05); }
+.btn__sub { display: block; font-size: 10.5px; font-weight: 600; opacity: .85; margin-top: 2px; }
+.btn--soft { background: var(--surface); border: 1px solid var(--line); color: var(--ink); }
+.btn--soft:hover:not(:disabled) { background: #eeeef4; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Focus mode — while a video is open, the popup is a download form and nothing
+   else. The credits bar, the upgrade CTA and the license box all belong to the
+   plan, not to this download, and sitting above/below the picker they compete
+   with the one button the user came here to press. The paywall still fires on
+   the download itself, so nothing is lost by hiding the sales chrome here.
+   Done in CSS on a container class so the tier logic in refreshLicenseUI can go
+   on setting its own .hidden flags without either side clobbering the other. */
+.popup.is-picking #credits-row,
+.popup.is-picking #upgrade-btn,
+.popup.is-picking #license-section { display: none; }
+
+/* Step heading over the quality list — same treatment as the "Save as" label so
+   the two steps read as one form rather than two unrelated screens. */
+.label--step { margin-top: 14px; }
+#quality-step-back + .label--step { margin-top: 0; }
+
+/* ── Free-forever block (video-only / audio-only) ───────── */
+.free-block { margin-top: 16px; }
+.free-block__label { position: relative; text-align: center; margin-bottom: 10px; }
+.free-block__label::before {
+  content: ""; position: absolute; top: 50%; left: 0; right: 0;
+  height: 1px; background: var(--line);
+}
+.free-block__label span {
+  position: relative; background: #fff; padding: 0 10px;
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+  color: #16a34a;
+}
+.free-block__note { font-size: 10.5px; color: var(--muted); text-align: center; margin-top: 8px; }
+.btn-row { display: flex; gap: 8px; }
+.btn-row .btn { flex: 1; margin-top: 0; }
+/* One line, always. The resolution is a detail, not part of the label — it
+   rides along small and muted rather than wrapping the button to two rows. */
+.btn-row .btn--soft { padding: 10px 8px; font-size: 12.5px; white-space: nowrap; }
+.btn__meta { font-weight: 600; font-size: 10.5px; color: var(--muted); margin-left: 4px; }
 
 /* ── YouTube policy notice ──────────────────────────────── */
 .yt-policy { margin-top: 4px; }
@@ -165,6 +210,13 @@ body {
 .msg { font-size: 12px; margin-top: 8px; min-height: 15px; text-align: center; }
 .msg--success { color: var(--ok); font-weight: 600; }
 .msg--error { color: var(--danger); font-weight: 600; }
+/* Not an error — the download still works, just not the merged one. Reads as a
+   heads-up, so it sits in a soft panel rather than shouting in red. */
+.msg--warn {
+  color: #92400e; background: #fffbeb; border: 1px solid #fde68a;
+  border-radius: 8px; padding: 8px 10px; text-align: left;
+  line-height: 1.45; margin-bottom: 12px; min-height: 0;
+}
 .divider { border: none; border-top: 1px solid var(--line); margin: 16px 0 12px; }
 
 /* ── Footer ─────────────────────────────────────────────── */
@@ -198,8 +250,40 @@ body {
 .plan-card__list { list-style: none; margin: 12px 0; display: flex; flex-direction: column; gap: 6px; }
 .plan-card__list li { font-size: 12px; color: #3f3f4a; padding-left: 18px; position: relative; line-height: 1.35; }
 .plan-card__list li::before { content: '✓'; position: absolute; left: 0; color: var(--accent-strong); font-weight: 800; }
-.plan-card__cta { display: block; text-align: center; padding: 9px; border-radius: 9px; background: var(--grad); color: #4a3000; font-weight: 800; font-size: 13px; }
-.plan-card__cta--ghost { background: #fff; border: 1.5px solid var(--accent); color: var(--accent-strong); margin-top: 10px; }
+/* The one button this modal exists for. Deeper amber than the brand accent on
+   purpose: white text needs ~4.5:1 to be readable at this size, and the bright
+   --grad only clears that against near-black — which is why this used to be dark
+   brown on orange and read as disabled. #b45309 puts white at 4.7:1, so the
+   button can be light-on-dark like every other primary action people click. */
+.plan-card__cta {
+  display: block; position: relative; overflow: hidden; text-align: center;
+  padding: 11px; border-radius: 9px; font-weight: 800; font-size: 13.5px;
+  background: linear-gradient(135deg, #b45309, #92400e); color: #fff;
+  box-shadow: 0 4px 14px rgba(180,83,9,.32);
+  transition: box-shadow .15s, filter .15s;
+}
+.plan-card--featured:hover .plan-card__cta { box-shadow: 0 6px 20px rgba(180,83,9,.45); filter: brightness(1.08); }
+/* A slow sheen crossing the button — enough motion to read as "live" and pull the
+   eye, with a long pause between passes so it never becomes a flashing banner. */
+.plan-card--featured .plan-card__cta::after {
+  content: ''; position: absolute; top: 0; left: -60%; width: 45%; height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,.38), transparent);
+  transform: skewX(-20deg); animation: cta-sheen 3.2s ease-in-out infinite;
+}
+@keyframes cta-sheen { 0%, 55% { left: -60%; } 100% { left: 125%; } }
+@media (prefers-reduced-motion: reduce) { .plan-card--featured .plan-card__cta::after { animation: none; } }
+/* The secondary CTAs inherit the base's padding/radius but not its amber glow —
+   an orange halo under a white or green button just looks like a bug. */
+.plan-card__cta--ghost { background: #fff; border: 1.5px solid var(--accent); color: var(--accent-strong); margin-top: 10px; box-shadow: none; }
+/* Lifetime — a full card, weighted just under the featured monthly one. Green
+   throughout (flag, border, ticks, button) so it reads as its own offer rather
+   than a washed-out version of the amber card above it. */
+.plan-card--value { border-color: #86efac; background: #f6fdf8; }
+.plan-card--value:hover { border-color: var(--ok); box-shadow: 0 4px 14px rgba(22,163,74,.16); }
+.plan-card__flag--value { color: #15803d; background: #dcfce7; }
+.plan-card__list--value li::before { color: #15803d; }
+.plan-card__cta--value { background: linear-gradient(135deg, #16a34a, #15803d); color: #fff; box-shadow: none; }
+.plan-card--value:hover .plan-card__cta--value { filter: brightness(1.08); }
 .plan-card__reassure { font-size: 10.5px; color: var(--muted); text-align: center; margin-top: 8px; }
 .modal__later { width: 100%; border: none; background: none; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; padding: 6px; font-family: inherit; }
 

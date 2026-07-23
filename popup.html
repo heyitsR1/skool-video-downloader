@@ -48,11 +48,41 @@
         <span id="quality-thumb" class="quality-thumb hidden"></span>
         <div class="quality-view__title" id="quality-title" data-i18n="qualityTitleDefault">Choose quality</div>
       </div>
-      <div id="quality-list" class="quality-list"></div>
       <div class="section section--name">
         <label class="label" for="filename-input" data-i18n="saveAsLabel">Save as</label>
         <input type="text" id="filename-input" class="input" data-i18n-placeholder="filenamePlaceholder" placeholder="filename">
       </div>
+
+      <!-- Step 1 — what kind of file. Only shown when the stream ships video and
+           audio separately, i.e. when "combined" and "single track" actually
+           differ. Otherwise the quality list is the whole decision and this is
+           skipped entirely. -->
+      <div id="action-step" class="hidden">
+        <!-- Shown only when this machine's engine can't run the merger at all. -->
+        <div id="no-simd-note" class="msg msg--warn hidden" data-i18n="noSimdNote"></div>
+        <button id="btn-combined" class="btn btn--primary">
+          <span data-i18n="combinedBtn">Download video + audio</span>
+          <span class="btn__sub" data-i18n="combinedBtnSub">One file, with sound</span>
+        </button>
+        <!-- Always-free single-track downloads. No ffmpeg merge, so these work on
+             machines whose CPU lacks Wasm SIMD, and they never spend a credit. -->
+        <div class="free-block">
+          <div class="free-block__label"><span data-i18n="freeForeverLabel">Free forever · no limit</span></div>
+          <div class="btn-row">
+            <button id="btn-video-only" class="btn btn--soft" data-i18n="videoOnlyBtn">Video only</button>
+            <button id="btn-audio-only" class="btn btn--soft" data-i18n="audioOnlyBtn">Audio only</button>
+          </div>
+          <div class="free-block__note" data-i18n="freeBlockNote">Separate files — no merge, no credit used.</div>
+        </div>
+      </div>
+
+      <!-- Step 2 — quality. Also the only step when there's nothing to merge. -->
+      <div id="quality-step">
+        <button id="quality-step-back" class="link-back hidden" data-i18n="qualityStepBack">← Back to options</button>
+        <div class="label label--step" data-i18n="chooseQualityLabel">Choose quality</div>
+        <div id="quality-list" class="quality-list"></div>
+      </div>
+
       <div id="quality-error" class="msg msg--error hidden"></div>
     </div>
 
@@ -133,33 +163,34 @@
           <li data-i18n="planFeatureUnlimited">Unlimited downloads — no weekly cap</li>
           <li data-i18n="planFeatureResolution">Every resolution the source offers</li>
           <li data-i18n="planFeaturePlatforms">Skool, Loom, Vimeo, YouTube &amp; Wistia</li>
-          <li data-i18n="planFeatureConcurrent">3 concurrent downloads</li>
+          <li data-i18n="planFeatureSupport">Priority email support</li>
           <li data-i18n="planFeaturePrivate">100% private — processed on your device</li>
         </ul>
         <span class="plan-card__cta" data-i18n="planCtaGoUnlimited">Go unlimited</span>
         <p class="plan-card__reassure" data-i18n="planReassure">Secure checkout · Instant access</p>
       </a>
 
-      <a id="buy-annual" class="plan-card plan-card--compact" target="_blank">
+      <!-- Two plans, one decision: rent it or own it. Lifetime gets a full card of
+           its own rather than a footnote link — it's the plan worth steering people
+           to, and a link under the CTA reads as an afterthought. Green rather than
+           amber so it's a second, different offer instead of a dimmer copy of the
+           card above. -->
+      <a id="buy-lifetime" class="plan-card plan-card--value" target="_blank">
+        <span class="plan-card__flag plan-card__flag--value" data-i18n="planBestValue">★ BEST VALUE</span>
         <div class="plan-card__head">
-          <div class="plan-card__name-group">
-            <span class="plan-card__name" data-i18n="planAnnualName">Annual</span>
-            <span class="plan-card__name-sub" data-i18n="planAnnualSub">save 58% vs monthly</span>
-          </div>
-          <div class="plan-card__price plan-card__price--md">$79.99 <small>/yr</small></div>
-        </div>
-        <span class="plan-card__cta plan-card__cta--ghost" data-i18n="planCtaGetAnnual">Get annual</span>
-      </a>
-
-      <a id="buy-lifetime" class="plan-card plan-card--compact" target="_blank">
-        <div class="plan-card__head">
-          <div class="plan-card__name-group">
+          <div>
             <span class="plan-card__name" data-i18n="planLifetimeName">Lifetime</span>
-            <span class="plan-card__name-sub" data-i18n="planLifetimeSub">pay once, own forever</span>
+            <div class="plan-card__tagline" data-i18n="planLifetimeSub">Pay once, own it forever</div>
           </div>
-          <div class="plan-card__price plan-card__price--md">$99.99 <small>once</small></div>
+          <span class="plan-card__price">$99.99 <small>once</small></span>
         </div>
-        <span class="plan-card__cta plan-card__cta--ghost" data-i18n="planCtaBuyOnce">Buy once</span>
+        <ul class="plan-card__list plan-card__list--value">
+          <li data-i18n="planLifetimeFeatureEverything">Everything in Monthly, permanently</li>
+          <li data-i18n="planLifetimeFeatureNoRenewal">No renewals, no expiry, no card on file</li>
+          <li data-i18n="planLifetimeFeatureUpdates">All future updates included</li>
+        </ul>
+        <span class="plan-card__cta plan-card__cta--value" data-i18n="planCtaBuyOnce">Buy once, own forever</span>
+        <p class="plan-card__reassure" data-i18n="planLifetimeReassure">Costs less than 11 months of Monthly</p>
       </a>
 
       <button class="modal__later" data-close data-i18n="modalLater">Maybe later</button>
