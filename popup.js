@@ -517,6 +517,15 @@ function activationErrorMessage(code) {
   switch (code) {
     case 'license_inactive':
       return t('licenseInactive', 'That license is inactive — the subscription may have been cancelled or expired.');
+    // Freemius's wording for "all activation slots used". Reported as "it says
+    // my key is expired" by a real customer in July 2026, because this fell
+    // through to the generic invalid-or-expired message — the key was fine, it
+    // had simply run out of slots. Note a slot is consumed per INSTALL, so
+    // reinstalling the extension uses a fresh one.
+    case 'license_utilized':
+      return t('licenseUtilized', 'This license is already active on all of its allowed installs. Reinstalling the extension uses up a slot — email support@tailsgate.com and we\'ll free one for you right away.');
+    case 'license_expired':
+      return t('licenseExpired', 'That license has expired. If you believe it should still be active, email support@tailsgate.com.');
     case 'activation_limit':
       return t('licenseLimit', 'That license has reached its activation limit. Contact support and we\'ll free up a slot.');
     case 'wrong_product':

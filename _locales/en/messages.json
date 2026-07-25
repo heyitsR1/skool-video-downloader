@@ -89,6 +89,8 @@
   "licenseInvalid": { "message": "Invalid or expired license key." },
   "licenseInactive": { "message": "That license is inactive — the subscription may have been cancelled or expired." },
   "licenseLimit": { "message": "That license has reached its activation limit. Contact support and we'll free up a slot." },
+  "licenseUtilized": { "message": "This license is already active on all of its allowed installs. Reinstalling the extension uses up a slot — email support@tailsgate.com and we'll free one for you right away." },
+  "licenseExpired": { "message": "That license has expired. If you believe it should still be active, email support@tailsgate.com." },
   "licenseWrongProduct": { "message": "That key belongs to a different one of our extensions, not this one." },
   "licenseNetwork": { "message": "Couldn't reach the license server. Check your connection and try again." },
   "upgradeCancelled": { "message": "Lifetime activated — your monthly subscription has been cancelled." },
