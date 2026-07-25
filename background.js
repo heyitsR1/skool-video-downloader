@@ -280,27 +280,91 @@ async function getLicenseStatus() {
   return { tier: null, remaining: Math.max(0, FREE_WEEKLY_LIMIT - count), limit: FREE_WEEKLY_LIMIT, resetDate: expired ? null : freeWeekResetDate };
 }
 
+// Which processor issued the stored key, and (for Dodo) which activation
+// instance is ours. Both are decided by the Worker at activation time and echoed
+// back on every revalidation so the Worker never has to guess a provider.
 async function activateLicense(licenseKey) {
+  // Read the outgoing state first: a lifetime key replacing a Dodo monthly one
+  // is an upgrade, and the old key is the only handle on the subscription that
+  // now needs cancelling.
+  const previous = await chrome.storage.local.get(['licenseKey', 'tier', 'licenseSource']);
+
+  let result;
   try {
     const installId = await getInstallId();
     const res = await fetch(`${WORKER_URL}/activate-license`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ licenseKey, installId })
     });
-    const result = await res.json();
-    if (result.valid) {
-      const store = { licenseKey, licenseValidatedAt: Date.now() };
-      if (result.tier) store.tier = result.tier;
-      await chrome.storage.local.set(store);
-    }
-    return result;
+    result = await res.json();
   } catch {
     return { valid: false, error: 'network_error' };
   }
+
+  if (!result.valid) return result;
+
+  // Store the entitlement BEFORE attempting any billing change: if the cancel
+  // call fails, the customer still owns what they just paid for.
+  const store = {
+    // The Worker echoes the casing Dodo accepted; fall back to what was typed.
+    licenseKey: result.licenseKey || licenseKey,
+    licenseValidatedAt: Date.now(),
+  };
+  if (result.tier) store.tier = result.tier;
+  if (result.source) store.licenseSource = result.source;
+  if (result.instanceId) store.dodoInstanceId = result.instanceId;
+  else if (result.source === 'freemius') store.dodoInstanceId = null;
+  await chrome.storage.local.set(store);
+
+  const upgrade = await cancelSupersededMonthly(previous, result, store.licenseKey);
+  return upgrade ? { ...result, upgrade } : result;
+}
+
+// Dodo can't convert a subscription into a one-time purchase the way Freemius
+// prorated an upgrade, so buying lifetime leaves the monthly subscription
+// charging. Ask the shared Worker (the only one holding the processors' secret
+// keys) to cancel it. Best-effort: the popup tells the customer to cancel
+// manually if this fails, which is far better than a subscription they believe
+// is gone.
+//
+// The old subscription may be on EITHER processor — a legacy Freemius monthly
+// subscriber who buys the new Dodo lifetime has the same problem, and worse,
+// no shared customer record between the two. The Worker resolves the old key
+// against both.
+// -> { cancelled: boolean } when an upgrade was detected, else null
+async function cancelSupersededMonthly(previous, result, newKey) {
+  const isUpgrade = previous.tier === 'monthly'
+    && previous.licenseKey
+    && previous.licenseKey !== newKey
+    && result.source === 'dodo'
+    && result.tier === 'lifetime';
+  if (!isUpgrade) return null;
+
+  for (const base of REPORT_API_BASES) {
+    try {
+      const res = await fetch(`${base}/upgrade-cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product: 'skool-video-downloader',
+          oldLicenseKey: previous.licenseKey,
+          oldLicenseSource: previous.licenseSource || 'freemius',
+          newLicenseKey: newKey,
+        })
+      });
+      if (!res.ok) continue;
+      const body = await res.json();
+      await svdLog('license', `upgrade-cancel: ${body.ok ? 'cancelled' : `failed (${body.error})`}`);
+      return { cancelled: !!body.ok };
+    } catch { /* try the next base */ }
+  }
+  await svdLog('license', 'upgrade-cancel: unreachable');
+  return { cancelled: false };
 }
 
 async function revalidateLicenseIfStale() {
-  const { licenseKey, tier, licenseValidatedAt } = await chrome.storage.local.get(['licenseKey', 'tier', 'licenseValidatedAt']);
+  const { licenseKey, tier, licenseValidatedAt, licenseSource, dodoInstanceId } =
+    await chrome.storage.local.get(['licenseKey', 'tier', 'licenseValidatedAt', 'licenseSource', 'dodoInstanceId']);
   // A paid tier with no license key never came from activateLicense — it was
   // hand-set in storage. Drop it so a paid tier only persists alongside a key
   // that keeps passing server revalidation.
@@ -314,11 +378,22 @@ async function revalidateLicenseIfStale() {
     const installId = await getInstallId();
     const res = await fetch(`${WORKER_URL}/validate-license`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ licenseKey, installId })
+      body: JSON.stringify({ licenseKey, installId, source: licenseSource, instanceId: dodoInstanceId })
     });
     const result = await res.json();
-    if (!result.valid) await chrome.storage.local.remove(['licenseKey', 'tier', 'licenseValidatedAt']);
-    else await chrome.storage.local.set({ licenseValidatedAt: Date.now() });
+    // A provider we couldn't reach is not a verdict. Leave licenseValidatedAt
+    // alone so the next hourly alarm retries instead of resting for 24h — and
+    // never revoke on it, which is what used to happen during an outage.
+    if (result.indeterminate) {
+      await svdLog('license', `revalidation inconclusive (${result.error || 'unknown'}) — keeping tier`);
+      return;
+    }
+    if (!result.valid) {
+      await svdLog('license', `licence revoked by ${licenseSource || 'freemius'}: ${result.error || 'invalid'}`);
+      await chrome.storage.local.remove(['licenseKey', 'tier', 'licenseValidatedAt', 'licenseSource', 'dodoInstanceId']);
+    } else {
+      await chrome.storage.local.set({ licenseValidatedAt: Date.now() });
+    }
   } catch {}
 }
 
