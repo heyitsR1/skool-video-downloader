@@ -14,8 +14,8 @@ compatibility_date = "2024-09-23"
 # move money.
 #
 # DODO_MODE is unset on purpose, which means LIVE (see resolveDodo). To run a
-# test-mode purchase end to end, add the var below, deploy, test, then REMOVE it
-# and redeploy:
+# test-mode purchase end to end, uncomment the block below, deploy, test, then
+# comment it out again and redeploy — as was done for the 2026-07-25 E2E.
 #
 #   [vars]
 #   DODO_MODE = "test"

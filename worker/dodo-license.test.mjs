@@ -37,8 +37,8 @@ test('resolveDodo honours an explicit test mode, with its own product ids', () =
 
 // ── Key casing ────────────────────────────────────────────────────────────────
 
-test('dodoKeyCandidates yields one candidate for an already-uppercase key', () => {
-  assert.deepStrictEqual(dodoKeyCandidates(' ABC-123 '), ['ABC-123']);
+test('dodoKeyCandidates trims, then tries lowercase for an uppercase key', () => {
+  assert.deepStrictEqual(dodoKeyCandidates(' ABC-123 '), ['ABC-123', 'abc-123']);
 });
 
 test('dodoKeyCandidates adds an uppercase retry for a mixed-case key', () => {
@@ -382,4 +382,118 @@ test('both endpoints reject missing params, and unknown routes 404', async () =>
   }
   const res = await worker.fetch(post('/nope', {}), {});
   assert.strictEqual(res.status, 404);
+});
+
+// ── Compatibility with the PUBLISHED v1.2.0 extension ────────────────────────
+// The website sells Dodo licences while v1.2.0 is still the version in the
+// Chrome Web Store. That version uppercases the key before sending it and never
+// stores a licence source, so both of those have to work server-side or every
+// website purchase is a broken sale until the store approves v1.3.0.
+
+test('dodoKeyCandidates includes the lowercase form (what v1.2.0 destroys)', () => {
+  assert.deepStrictEqual(
+    dodoKeyCandidates('CFCB0A5A-F14C-42A7-9C6F-DBCC578828BC'),
+    ['CFCB0A5A-F14C-42A7-9C6F-DBCC578828BC', 'cfcb0a5a-f14c-42a7-9c6f-dbcc578828bc']
+  );
+  assert.deepStrictEqual(dodoKeyCandidates('  MiXeD-CaSe  ')[1], 'mixed-case');
+});
+
+test('activate: a v1.2.0 client sending an UPPERCASED Dodo key still activates', async () => {
+  const stub = stubFetch((_url, options) => {
+    const sent = JSON.parse(options.body).license_key;
+    return sent === DODO_KEY.toLowerCase()
+      ? { status: 201, body: { id: 'lki_v12', product: { product_id: LIVE_MONTHLY } } }
+      : { status: 404, body: {} };
+  });
+  try {
+    const res = await worker.fetch(
+      post('/activate-license', { licenseKey: DODO_KEY.toUpperCase(), installId: INSTALL_ID }),
+      {}
+    );
+    const payload = await res.json();
+    assert.strictEqual(payload.valid, true);
+    assert.strictEqual(payload.tier, 'monthly');
+    assert.strictEqual(payload.licenseKey, DODO_KEY.toLowerCase(), 'echoes the casing Dodo accepted');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('validate: no stored source + a >32-char key routes to Dodo, not Freemius', async () => {
+  // Asking Freemius earns "license_key_too_long", which reads as a definitive
+  // verdict and would revoke a paying customer's licence.
+  const stub = stubFetch((url) => (url.includes('dodopayments')
+    ? { status: 200, body: { valid: true } }
+    : { status: 200, body: { error: { code: 'license_key_too_long' } } }));
+  try {
+    const res = await worker.fetch(
+      post('/validate-license', { licenseKey: DODO_KEY, installId: INSTALL_ID }),
+      { FREEMIUS_SECRET_KEY: 'sk_test' }
+    );
+    assert.deepStrictEqual(await res.json(), { valid: true, source: 'dodo' });
+    assert.ok(!stub.calls.some((c) => c.url.includes('freemius')), 'must not ask Freemius about a Dodo key');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('validate: a short key with no stored source still goes to Freemius', async () => {
+  const stub = stubFetch(() => ({ status: 200, body: { error: { code: 'license_activated' } } }));
+  try {
+    const res = await worker.fetch(
+      post('/validate-license', { licenseKey: 'LEGACYKEY123', installId: INSTALL_ID }),
+      { FREEMIUS_SECRET_KEY: 'sk_test' }
+    );
+    assert.deepStrictEqual(await res.json(), { valid: true, source: 'freemius' });
+    assert.ok(stub.calls[0].url.includes('api.freemius.com'));
+  } finally {
+    stub.restore();
+  }
+});
+
+test('validate: an uppercased stored key revalidates via the lowercase retry', async () => {
+  const stub = stubFetch((_url, options) => {
+    const sent = JSON.parse(options.body).license_key;
+    return { status: 200, body: { valid: sent === DODO_KEY.toLowerCase() } };
+  });
+  try {
+    const res = await worker.fetch(
+      post('/validate-license', {
+        licenseKey: DODO_KEY.toUpperCase(),
+        installId: INSTALL_ID,
+        source: 'dodo',
+        instanceId: 'lki_1',
+      }),
+      {}
+    );
+    assert.deepStrictEqual(await res.json(), { valid: true, source: 'dodo' });
+  } finally {
+    stub.restore();
+  }
+});
+
+test('validate: every casing invalid IS a revocation; one hiccup is not', async () => {
+  const allInvalid = stubFetch(() => ({ status: 200, body: { valid: false } }));
+  try {
+    const res = await worker.fetch(
+      post('/validate-license', { licenseKey: DODO_KEY, installId: INSTALL_ID, source: 'dodo' }),
+      {}
+    );
+    assert.deepStrictEqual(await res.json(), { valid: false, error: 'license_inactive' });
+  } finally {
+    allInvalid.restore();
+  }
+
+  const oneHiccup = stubFetch((_url, _o) => ({ status: 503, body: {} }));
+  try {
+    const res = await worker.fetch(
+      post('/validate-license', { licenseKey: DODO_KEY, installId: INSTALL_ID, source: 'dodo' }),
+      {}
+    );
+    const payload = await res.json();
+    assert.strictEqual(payload.valid, true);
+    assert.strictEqual(payload.indeterminate, true);
+  } finally {
+    oneHiccup.restore();
+  }
 });

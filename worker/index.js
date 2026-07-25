@@ -14,8 +14,12 @@
 //
 // Activation tries Dodo first and falls through to Freemius on 404 (unknown
 // key). Revalidation dispatches on the source the extension stored at
-// activation time — never a guess — so an install that upgraded from 1.2.0
-// (no stored source) stays on Freemius.
+// activation time; when a client stores no source (every v1.2.0 install) it
+// routes on the key's shape instead, since a Freemius key can't exceed 32 chars.
+//
+// ⚠️ This Worker must keep working for the PUBLISHED v1.2.0 extension, which
+// knows nothing about Dodo yet — the website already sells Dodo licences. See
+// dodoKeyCandidates and handleValidate for the two places that depends on.
 const FREEMIUS_PRODUCT_ID = '33457';
 const FREEMIUS_BASE = `https://api.freemius.com/v1/products/${FREEMIUS_PRODUCT_ID}`;
 
@@ -54,14 +58,23 @@ export function resolveDodo(mode) {
   return DODO_MODES[mode === 'test' ? 'test' : 'live'];
 }
 
-// Keys a customer might paste for the same license. Dodo compares
-// case-sensitively, and copy-paste out of an email client mangles case often
-// enough to be worth one extra request on the failure path only — a wrong case
-// otherwise reads to the customer as "my key doesn't work".
+// Casings to try for the same licence. Dodo compares case-sensitively (verified
+// 2026-07-25: the uppercase form of a real key 404s), and keys are issued as
+// lowercase UUIDs — so this list is what makes two otherwise-broken cases work:
+//
+//   • copy-paste out of an email client that mangled the case
+//   • ⚠️ the ALREADY-PUBLISHED v1.2.0 extension, whose popup uppercases the key
+//     before sending it. The website sells Dodo licences NOW, while v1.2.0 is
+//     still the version in the store, so without the lowercase candidate every
+//     one of those customers would be unable to activate the key they paid for.
+//     Do not remove this until v1.3.0+ is the only version in the wild.
 export function dodoKeyCandidates(licenseKey) {
   const raw = licenseKey.trim();
-  const upper = raw.toUpperCase();
-  return upper === raw ? [raw] : [raw, upper];
+  const seen = [];
+  for (const candidate of [raw, raw.toLowerCase(), raw.toUpperCase()]) {
+    if (!seen.includes(candidate)) seen.push(candidate);
+  }
+  return seen;
 }
 
 export function buildDodoActivateRequest(apiBase, licenseKey, instanceName) {
@@ -311,28 +324,48 @@ async function handleValidate(request, env) {
     return cors(JSON.stringify({ valid: false, error: 'missing_params' }), 400);
   }
 
-  // Dispatch on the source stored at activation time. Absent = an install that
-  // predates v1.3.0, which can only hold a Freemius key.
+  // Dispatch on the source stored at activation time when the client tracks it.
   if (body.source === 'dodo') return validateDodo(body, env);
+  if (body.source === 'freemius') return validateFreemius(body, env);
+
+  // No stored source: either a pre-v1.3.0 install, or storage lost the field.
+  // Fall back to the key's SHAPE rather than assuming Freemius — a Freemius key
+  // is at most 32 chars, so anything longer is a Dodo key and asking Freemius
+  // would earn a definitive-looking "license_key_too_long", which the extension
+  // would act on by revoking a paying customer. This is the path every v1.2.0
+  // install takes, since that version never stored a source.
+  if (body.licenseKey.trim().length > 32) return validateDodo(body, env);
   return validateFreemius(body, env);
 }
 
 async function validateDodo(body, env) {
   const dodo = resolveDodo(env.DODO_MODE);
-  const { url, options } = buildDodoValidateRequest(dodo.apiBase, body.licenseKey.trim(), body.instanceId);
-  let res;
-  try {
-    res = await fetch(url, options);
-  } catch {
-    return cors(JSON.stringify({ valid: true, indeterminate: true, error: 'network_error' }), 200);
-  }
-  let payload = null;
-  try { payload = await res.json(); } catch { /* empty or non-JSON body */ }
+  // Same casing problem as activation, and here it decides whether a paying
+  // customer keeps Pro: a v1.2.0 install stored the key uppercased, so asking
+  // Dodo about that exact string would come back invalid every time. Only a
+  // verdict of "invalid" for EVERY casing is treated as a real revocation.
+  let sawIndeterminate = false;
+  for (const candidate of dodoKeyCandidates(body.licenseKey)) {
+    const { url, options } = buildDodoValidateRequest(dodo.apiBase, candidate, body.instanceId);
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch {
+      sawIndeterminate = true;
+      continue;
+    }
+    let payload = null;
+    try { payload = await res.json(); } catch { /* empty or non-JSON body */ }
 
-  const { outcome } = classifyDodoValidation(res.status, payload);
-  if (outcome === 'valid') return cors(JSON.stringify({ valid: true, source: 'dodo' }), 200);
-  if (outcome === 'invalid') return cors(JSON.stringify({ valid: false, error: 'license_inactive' }), 200);
-  return cors(JSON.stringify({ valid: true, indeterminate: true, error: 'provider_unavailable' }), 200);
+    const { outcome } = classifyDodoValidation(res.status, payload);
+    if (outcome === 'valid') return cors(JSON.stringify({ valid: true, source: 'dodo' }), 200);
+    if (outcome === 'indeterminate') sawIndeterminate = true;
+  }
+  // Never revoke on the strength of an answer we could not actually get.
+  if (sawIndeterminate) {
+    return cors(JSON.stringify({ valid: true, indeterminate: true, error: 'provider_unavailable' }), 200);
+  }
+  return cors(JSON.stringify({ valid: false, error: 'license_inactive' }), 200);
 }
 
 async function validateFreemius(body, env) {
