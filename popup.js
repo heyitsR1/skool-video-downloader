@@ -3,21 +3,33 @@
 // resolution → enqueue. A live download-manager panel renders queue state from
 // background QUEUE_* broadcasts (progress, speed, cancel).
 
-// Freemius checkout — Skool Video Downloader (product 33457, plan 54961,
-// pricing 72637). MV3 popup CSP forbids loading Freemius's checkout.min.js,
-// so — like the Whop downloader — we open the hosted popup-mode checkout URL
-// directly. The /plan/ segment takes the plan id (not the pricing id); one
-// pricing object under that plan carries the cycles ($9.99/mo, $99.99 lifetime)
-// and billing_cycle preselects which it opens on. The annual cycle still exists
-// on the Freemius pricing object but is deliberately not offered anywhere in the
-// UI — it's monthly or one-time, nothing in between.
-// NOTE: the actual charged amount lives on Freemius's pricing object (id
-// 72637) — update it there too, this comment/UI text doesn't drive billing.
-const FS_PRODUCT_ID = 33457;
-const FS_PLAN_ID = 54961;
-const CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PLAN_ID}/`;
-const CHECKOUT_MONTHLY = `${CHECKOUT}?billing_cycle=monthly`;
-const CHECKOUT_LIFETIME = `${CHECKOUT}?billing_cycle=lifetime`;
+// Dodo Payments checkout — every new customer since v1.3.0. Two separate
+// products rather than one plan with cycles (Freemius's shape), so each price
+// gets its own hosted checkout URL. The amount charged lives on the Dodo
+// product; the copy below doesn't drive billing.
+//
+// Legacy Freemius keys still activate — that fallback lives in the licensing
+// Worker, not here — but nothing in the UI sells Freemius any more.
+//
+// redirect_url lands the buyer on our welcome page, which reads ?license_key=
+// out of the URL. Dodo also emails the key; the page exists so a buyer who
+// never checks their inbox is never stuck.
+const DODO_CHECKOUT = 'https://checkout.dodopayments.com/buy';
+const DODO_MONTHLY_PRODUCT = 'pdt_0Njs5UbIatGMhdS1azn5x';
+const DODO_LIFETIME_PRODUCT = 'pdt_0Njs5dir2LdaL8u9azm7j';
+const WELCOME_URL = 'https://skoolvideodownload.com/skool-video-downloader/welcome';
+
+function checkoutUrl(productId) {
+  const params = new URLSearchParams({ quantity: '1', redirect_url: WELCOME_URL });
+  return `${DODO_CHECKOUT}/${productId}?${params.toString()}`;
+}
+
+const CHECKOUT_MONTHLY = checkoutUrl(DODO_MONTHLY_PRODUCT);
+const CHECKOUT_LIFETIME = checkoutUrl(DODO_LIFETIME_PRODUCT);
+
+// Cancel page, offered when an automatic monthly cancellation after a lifetime
+// upgrade didn't go through.
+const CANCEL_URL = 'https://skoolvideodownload.com/skool-video-downloader/cancel-subscription';
 
 const PLATFORM_ICON = {
   skool: '🎓', loom: '🔴', vimeo: '🎬', youtube: '▶️', wistia: '🟢', hls: '🎞️'
@@ -82,6 +94,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (activeTab?.id) chrome.tabs.sendMessage(activeTab.id, { type: 'RESCAN' }).catch(() => {});
 });
 
+// Copy added after the 15 locales were translated. chrome.i18n.getMessage
+// returns '' for a key a locale lacks, so English is the graceful fallback
+// rather than a blank string.
+function t(key, fallback) {
+  return chrome.i18n.getMessage(key) || fallback;
+}
+
 // ── License UI ──────────────────────────────────────────────────────────────
 async function initLicenseUI() {
   const status = await send({ type: 'GET_LICENSE_STATUS' });
@@ -91,6 +110,7 @@ async function initLicenseUI() {
   const lifetimeLink = document.getElementById('lifetime-link');
   const upgradeBtn = document.getElementById('upgrade-btn');
   const licenseSection = document.getElementById('license-section');
+  const licenseLabel = document.querySelector('#license-section .label');
 
   lifetimeLink.classList.add('hidden');
   upgradeBtn.classList.add('hidden');
@@ -103,8 +123,13 @@ async function initLicenseUI() {
     badge.textContent = chrome.i18n.getMessage('badgePro'); badge.className = 'badge badge--pro';
     creditsText.textContent = chrome.i18n.getMessage('proCredits');
     lifetimeLink.href = CHECKOUT_LIFETIME; lifetimeLink.classList.remove('hidden');
-    licenseSection.classList.add('hidden');
+    // A monthly subscriber who buys lifetime gets a brand-new key and needs
+    // somewhere to enter it — this box used to be hidden for paid tiers, which
+    // left the upgrade with no way to complete.
+    licenseLabel.textContent = t('licenseLabelUpgrade', 'Bought lifetime? Activate your new key');
+    licenseSection.classList.remove('hidden');
   } else {
+    licenseLabel.textContent = chrome.i18n.getMessage('licenseLabel');
     badge.textContent = chrome.i18n.getMessage('badgeFree'); badge.className = 'badge badge--free';
     const rem = status.remaining;
     creditsText.textContent = rem > 0
@@ -483,24 +508,70 @@ function setupPricingModal() {
 }
 
 // ── License activation ────────────────────────────────────────────────────────
+// A definite reason beats "invalid license" wherever the Worker gives us one:
+// "your subscription lapsed" and "you typo'd the key" need different actions
+// from the customer, and the old single message left them guessing.
+function activationErrorMessage(code) {
+  switch (code) {
+    case 'license_inactive':
+      return t('licenseInactive', 'That license is inactive — the subscription may have been cancelled or expired.');
+    case 'activation_limit':
+      return t('licenseLimit', 'That license has reached its activation limit. Contact support and we\'ll free up a slot.');
+    case 'wrong_product':
+      return t('licenseWrongProduct', 'That key belongs to a different one of our extensions, not this one.');
+    case 'network_error':
+      return t('licenseNetwork', 'Couldn\'t reach the license server. Check your connection and try again.');
+    default:
+      return chrome.i18n.getMessage('licenseInvalid');
+  }
+}
+
 function setupLicenseActivation() {
   const btn = document.getElementById('activate-btn');
   const input = document.getElementById('license-input');
-  const msg = document.getElementById('activate-msg');
+  const msgEl = document.getElementById('activate-msg');
   btn.addEventListener('click', async () => {
-    const key = input.value.trim().toUpperCase();
+    // Sent as typed: Dodo keys are case-sensitive. The Worker uppercases for
+    // the legacy Freemius attempt, which is the only path that needed it.
+    const key = input.value.trim();
     if (!key) return;
     btn.disabled = true; btn.textContent = chrome.i18n.getMessage('verifyingBtn');
-    msg.textContent = ''; msg.className = 'msg';
+    msgEl.textContent = ''; msgEl.className = 'msg';
     const result = await send({ type: 'ACTIVATE_LICENSE', licenseKey: key });
     if (result?.valid) {
-      msg.textContent = chrome.i18n.getMessage('licenseActivated'); msg.className = 'msg msg--success';
+      renderActivationSuccess(msgEl, result);
       setTimeout(initLicenseUI, 1000);
     } else {
-      msg.textContent = chrome.i18n.getMessage('licenseInvalid'); msg.className = 'msg msg--error';
+      msgEl.textContent = activationErrorMessage(result?.error); msgEl.className = 'msg msg--error';
       btn.disabled = false; btn.textContent = chrome.i18n.getMessage('activateBtn');
     }
   });
+}
+
+// Plain activation just confirms. A monthly→lifetime upgrade also reports what
+// happened to the old subscription, because the one thing a customer must never
+// have to wonder is whether they're still being charged.
+function renderActivationSuccess(msgEl, result) {
+  msgEl.className = 'msg msg--success';
+  if (!result.upgrade) {
+    msgEl.textContent = chrome.i18n.getMessage('licenseActivated');
+    return;
+  }
+  if (result.upgrade.cancelled) {
+    msgEl.textContent = t('upgradeCancelled', 'Lifetime activated — your monthly subscription has been cancelled.');
+    return;
+  }
+  msgEl.className = 'msg msg--error';
+  msgEl.textContent = t(
+    'upgradeCancelFailed',
+    'Lifetime activated. We couldn\'t cancel your monthly automatically — please cancel it so you\'re not billed again: '
+  );
+  const link = document.createElement('a');
+  link.href = CANCEL_URL;
+  link.target = '_blank';
+  link.className = 'footer-link';
+  link.textContent = t('upgradeCancelLink', 'Cancel monthly →');
+  msgEl.appendChild(link);
 }
 
 // ── Update banner ─────────────────────────────────────────────────────────────
