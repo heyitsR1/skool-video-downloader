@@ -6,3 +6,22 @@ compatibility_date = "2024-09-23"
 # Freemius product 33457 — NOT the Whop product's key) is set via:
 #   wrangler secret put FREEMIUS_SECRET_KEY
 # Never put the real key in this file.
+#
+# Dodo Payments needs NO key here: /licenses/activate and /licenses/validate are
+# public endpoints. Every Dodo call that requires the secret (cancellation,
+# win-back checkout sessions) lives in the shared whop-dl-license Worker instead,
+# so this Worker — the one on the hot path for every install — holds no way to
+# move money.
+#
+# DODO_MODE is unset on purpose, which means LIVE (see resolveDodo). To run a
+# test-mode purchase end to end, add the var below, deploy, test, then REMOVE it
+# and redeploy:
+#
+#   [vars]
+#   DODO_MODE = "test"
+#
+# Never leave test mode on in production: this repo is public, so the test
+# product ids are public, and a test-mode checkout would mint free Pro licences.
+
+# Run `npm test` in this directory before deploying — it covers the two-provider
+# activation ordering and the never-revoke-on-an-outage guarantee.
