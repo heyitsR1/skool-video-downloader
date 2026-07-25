@@ -17,7 +17,9 @@
 const DODO_CHECKOUT = 'https://checkout.dodopayments.com/buy';
 const DODO_MONTHLY_PRODUCT = 'pdt_0Njs5UbIatGMhdS1azn5x';
 const DODO_LIFETIME_PRODUCT = 'pdt_0Njs5dir2LdaL8u9azm7j';
-const WELCOME_URL = 'https://skoolvideodownload.com/skool-video-downloader/welcome';
+// Short, canonical form — the site 308s the long /skool-video-downloader/... path
+// here anyway, and a purchase redirect shouldn't need an extra hop.
+const WELCOME_URL = 'https://skoolvideodownload.com/welcome';
 
 function checkoutUrl(productId) {
   const params = new URLSearchParams({ quantity: '1', redirect_url: WELCOME_URL });
@@ -29,7 +31,7 @@ const CHECKOUT_LIFETIME = checkoutUrl(DODO_LIFETIME_PRODUCT);
 
 // Cancel page, offered when an automatic monthly cancellation after a lifetime
 // upgrade didn't go through.
-const CANCEL_URL = 'https://skoolvideodownload.com/skool-video-downloader/cancel-subscription';
+const CANCEL_URL = 'https://skoolvideodownload.com/cancel-subscription';
 
 const PLATFORM_ICON = {
   skool: '🎓', loom: '🔴', vimeo: '🎬', youtube: '▶️', wistia: '🟢', hls: '🎞️'
