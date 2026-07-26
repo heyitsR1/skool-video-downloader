@@ -865,35 +865,119 @@ function saveBlob(blob, filename) {
   });
 }
 
+// Clicking the anchor does not create the DownloadItem synchronously: Chrome has
+// to pull the whole blob across to the browser process first, which on a merged
+// multi-GB MP4 — right after ffmpeg.wasm held video+audio+output in one wasm heap
+// — can take far longer than it does for a small file. This used to give up after
+// 8s, and the caller's `finally` then revoked the blob URL and tore down the
+// offscreen document, killing a save that was still on its way and throwing away
+// ten minutes of downloading. Wait long enough that slow is never mistaken for
+// refused. Poll downloads.search() as well as listening for onCreated, because a
+// service worker that was evicted mid-wait misses the event entirely but the
+// DownloadItem is still there when it wakes.
+const SAVE_START_TIMEOUT_MS = 90000;
+const SAVE_START_POLL_MS = 5000;
+
 function saveViaOffscreenAnchor(filename) {
   return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
     let done = false;
-    const finish = (fn, arg) => { if (done) return; done = true; chrome.downloads.onCreated.removeListener(onCreated); clearTimeout(timer); fn(arg); };
-    const onCreated = (item) => {
-      if (item.byExtensionId && item.byExtensionId !== chrome.runtime.id) return;
+    let poll = null;
+    const finish = (fn, arg) => {
+      if (done) return;
+      done = true;
+      chrome.downloads.onCreated.removeListener(onCreated);
+      clearTimeout(timer); clearInterval(poll);
+      fn(arg);
+    };
+    const succeed = (item, how) => {
+      svdLog('save', `download started after ${Date.now() - startedAt}ms via ${how} (id ${item.id})`);
       finish(resolve, item.id);
     };
-    const timer = setTimeout(() => finish(reject, new Error('Save did not start')), 8000);
+    const onCreated = (item) => {
+      if (item.byExtensionId && item.byExtensionId !== chrome.runtime.id) return;
+      succeed(item, 'onCreated');
+    };
     chrome.downloads.onCreated.addListener(onCreated);
+
+    poll = setInterval(async () => {
+      const item = await findRecentBlobDownload(startedAt);
+      if (item && !done) succeed(item, 'search');
+    }, SAVE_START_POLL_MS);
+
+    const timer = setTimeout(async () => {
+      const item = await findRecentBlobDownload(startedAt);
+      if (item) { succeed(item, 'search-final'); return; }
+      svdLog('save', `no download appeared in ${Math.round(SAVE_START_TIMEOUT_MS / 1000)}s for "${filename}"`);
+      finish(reject, new Error(SAVE_BLOCKED_MESSAGE));
+    }, SAVE_START_TIMEOUT_MS);
+
     sendToOffscreen({ type: 'SAVE_CLICK', filename }).then((res) => {
       if (!res?.success) finish(reject, new Error(res?.error || 'Save failed'));
     });
   });
 }
 
-function waitForDownloadEnd(downloadId, timeoutMs = 10 * 60 * 1000) {
+// Our own blob saves are the only downloads this extension starts, so "began
+// after we clicked, and is a blob: URL from us" identifies ours without having to
+// guess how Chrome sanitised the filename.
+async function findRecentBlobDownload(since) {
+  try {
+    const items = await chrome.downloads.search({ limit: 25, orderBy: ['-startTime'] });
+    return items.find((i) => {
+      const started = Date.parse(i.startTime || '');
+      if (!Number.isFinite(started) || started < since - 2000) return false;
+      if (i.byExtensionId && i.byExtensionId !== chrome.runtime.id) return false;
+      return (i.url || '').startsWith('blob:') || (i.finalUrl || '').startsWith('blob:');
+    }) || null;
+  } catch { return null; }
+}
+
+// The video and audio are already on disk and the merge already succeeded by the
+// time this fires, so the only thing left to blame is whatever sits between
+// Chrome and the file system. Name the real suspects and point at the free
+// buttons, which take a different path and are the fastest thing the user can try.
+const SAVE_BLOCKED_MESSAGE =
+  'The video finished downloading and merged fine, but Chrome never started the save. ' +
+  'Something is blocking it — usually a download manager (IDM, Free Download Manager) ' +
+  'with browser integration on, antivirus web protection, or Chrome’s “automatic downloads” ' +
+  'setting being blocked for this site. Turn those off and try again, or use the free ' +
+  '“Video only” button, which saves a different way.';
+
+// Resolving here is what lets the caller revoke the blob URL and close the
+// offscreen document, so a premature "timeout" destroys a save that is still
+// running. Before giving up, ask Chrome what the item is actually doing: while it
+// is still in_progress we keep waiting (bounded), and only a genuinely stuck
+// download reports 'timeout'.
+function waitForDownloadEnd(downloadId, timeoutMs = 10 * 60 * 1000, maxExtensions = 3) {
   return new Promise((resolve) => {
     let reason = null;
+    let extensions = 0;
+    const stop = (state) => {
+      chrome.downloads.onChanged.removeListener(onChanged);
+      clearTimeout(timer);
+      resolve({ state, error: reason });
+    };
     const onChanged = (delta) => {
       if (delta.id !== downloadId) return;
       if (delta.error?.current) reason = delta.error.current;
       if (delta.state && (delta.state.current === 'complete' || delta.state.current === 'interrupted')) {
-        chrome.downloads.onChanged.removeListener(onChanged);
-        clearTimeout(timer);
-        resolve({ state: delta.state.current, error: reason });
+        stop(delta.state.current);
       }
     };
-    const timer = setTimeout(() => { chrome.downloads.onChanged.removeListener(onChanged); resolve({ state: 'timeout', error: reason }); }, timeoutMs);
+    const onTimeout = async () => {
+      let item = null;
+      try { [item] = await chrome.downloads.search({ id: downloadId }); } catch { /* fall through to timeout */ }
+      if (item?.state === 'complete' || item?.state === 'interrupted') { stop(item.state); return; }
+      if (item?.state === 'in_progress' && extensions < maxExtensions) {
+        extensions += 1;
+        svdLog('save', `download ${downloadId} still in progress after ${Math.round(timeoutMs * extensions / 60000)}m — waiting`);
+        timer = setTimeout(onTimeout, timeoutMs);
+        return;
+      }
+      stop('timeout');
+    };
+    let timer = setTimeout(onTimeout, timeoutMs);
     chrome.downloads.onChanged.addListener(onChanged);
   });
 }
@@ -948,7 +1032,7 @@ function withTimeout(promise, ms, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function mergeAndSave(videoBlob, audioBlob, filename, tabId) {
+function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving) {
   return withOffscreen(async () => {
     const jobId = Date.now();
     const videoKey = `https://skool-merge.local/${jobId}/video`;
@@ -962,6 +1046,9 @@ function mergeAndSave(videoBlob, audioBlob, filename, tabId) {
         'Merge timed out — this video may be too large for the in-browser merger.'
       );
       if (!result?.success) throw new Error(result?.error || 'Merge failed');
+      // The merge is done; handing a multi-GB blob to Chrome can take a while on
+      // its own, so move the bar off "merging" rather than looking frozen at 82%.
+      onSaving?.();
       const downloadId = await saveViaOffscreenAnchor(`${filename}.mp4`);
       const { state, error } = await waitForDownloadEnd(downloadId);
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
@@ -1099,7 +1186,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        await mergeAndSave(videoBlob, audioBlob, filename, tabId);
+        await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
       }
 
     } else if (quality.kind === 'vimeo-json') {
@@ -1117,7 +1204,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        await mergeAndSave(videoBlob, audioBlob, filename, tabId);
+        await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
       }
 
     } else if (quality.kind === 'merge') {
@@ -1131,7 +1218,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (isCancelled()) throw new Error('Cancelled');
       setPct(82, 'merging');
-      await mergeAndSave(videoBlob, audioBlob, filename, tabId);
+      await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
     }
 
     meta.percent = 100; meta.phase = 'done'; meta.speed = '';
