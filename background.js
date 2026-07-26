@@ -124,10 +124,18 @@ function addVideo(tabId, entry) {
     // json-text from the content script, wire for webRequest captures) — the
     // first thing to look at when a report says a phantom video was listed.
     const expiry = describeExpiry(jwtExpFromUrl(entry.url || ''));
-    svdLog('detect', `+${entry.platform} via ${entry.src || 'wire'} (${entry.key.slice(0, 80)})${expiry ? ` ${expiry}` : ''}`);
+    // Vimeo's share hash decides whether this entry can be resolved at all, and
+    // a report that doesn't say whether we had one can't be diagnosed.
+    const hash = entry.platform === 'vimeo' && !entry.jsonPlaylist ? ` h=${entry.hParam ? 'yes' : 'no'}` : '';
+    svdLog('detect', `+${entry.platform} via ${entry.src || 'wire'} (${entry.key.slice(0, 80)})${hash}${expiry ? ` ${expiry}` : ''}`);
   } else {
     // Merge — a later webRequest capture may carry headers a page-props entry lacked.
-    Object.assign(t.videos.get(entry.key), entry);
+    const prev = t.videos.get(entry.key);
+    const patch = { ...entry };
+    // A later, hash-less sighting of the same Vimeo video must not erase a share
+    // hash an earlier one carried: without it resolution 403s.
+    if (patch.hParam == null && prev.hParam != null) delete patch.hParam;
+    Object.assign(prev, patch);
   }
   persistRegistry();
   chrome.tabs.sendMessage(tabId, { type: 'VIDEO_DETECTED' }).catch(() => {});
@@ -146,9 +154,17 @@ try {
     (details) => {
       try {
         const url = details.url;
-        if (!url.includes('.m3u8')) return;
-        const isMaster = url.includes('?token=') || url.includes('/playlist') || /master/i.test(url);
-        if (!isMaster) return;
+        // Vimeo's player on Chrome never requests an m3u8 — it streams DASH from
+        // a signed …/v2/playlist/av/primary/playlist.json. That JSON is the only
+        // manifest a Chrome capture can ever see for Vimeo, and the only route
+        // to a Vimeo video whose share hash the page doesn't expose (Skool's
+        // embed builder drops it), so it is captured alongside HLS masters.
+        const isVimeoJson = /vimeocdn\.com\/.*\/playlist\.json/.test(url);
+        if (!isVimeoJson) {
+          if (!url.includes('.m3u8')) return;
+          const isMaster = url.includes('?token=') || url.includes('/playlist') || /master/i.test(url);
+          if (!isMaster) return;
+        }
 
         const headers = {};
         for (const h of details.requestHeaders || []) {
@@ -165,12 +181,27 @@ try {
           : /loom/.test(url) ? 'loom'
           : 'hls';
 
+        // Every play re-signs the Vimeo playlist URL (fresh exp/psid), so keying
+        // on the URL would stack a new popup entry per replay. Key on the clip
+        // uuid instead: one entry per video, and addVideo's merge keeps the
+        // freshest signature on it.
+        const clipId = isVimeoJson
+          ? (url.match(/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//) || [])[1]
+          : null;
+
         registryReady.then(() => addVideo(details.tabId, {
-          key: `hls:${url}`,
+          key: isVimeoJson ? `vimeo-json:${clipId || url}` : `hls:${url}`,
           platform,
-          label: PLATFORM_LABELS[platform] || 'Video',
+          // A played Vimeo video lists twice — once from its embed, once from
+          // this capture — and the two can't be linked (the playlist URL carries
+          // a clip uuid, not the numeric video id). They can't be de-duped
+          // either: a hash-less embed entry still resolves fine when the video
+          // is public. So name this one for where it came from, and let the user
+          // tell them apart.
+          label: isVimeoJson ? 'Vimeo (from player)' : (PLATFORM_LABELS[platform] || 'Video'),
           url,
           headers,
+          jsonPlaylist: isVimeoJson || undefined,
           title: null
         }));
       } catch {}
@@ -458,7 +489,11 @@ async function sendErrorReport(note, email, tabId) {
     getInstallId().catch(() => undefined),
   ]);
   const detected = listVideos(tabId)
-    .map(v => `${v.platform}/${v.src || 'wire'}${v.title ? `:${v.title.slice(0, 40)}` : ''}`)
+    // Vimeo entries note whether we hold the share hash: without it the embed
+    // path can only 403, so it's the difference between a bug and a private video.
+    .map(v => `${v.platform}/${v.src || 'wire'}`
+      + (v.platform === 'vimeo' && !v.jsonPlaylist ? (v.hParam ? '+h' : '-h') : '')
+      + (v.title ? `:${v.title.slice(0, 40)}` : ''))
     .slice(0, 8);
   const payload = {
     product: 'skool-video-downloader',
@@ -679,6 +714,64 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   return new Blob(blobs, { type: mimeType || 'video/mp4' });
 }
 
+// One track (video or audio) of a wire-captured Vimeo DASH playlist. The
+// playlist is re-read here rather than carried on the quality: it holds a signed
+// URL per segment — thousands on a long lesson — and those signatures expire, so
+// a fresh read is both smaller and more likely to still be valid. The init
+// segment arrives base64-inline (no request of its own) and must lead, since it
+// carries the fMP4 moov the concatenated media segments are useless without.
+async function downloadVimeoTrack(playlistUrl, kind, trackId, { onProgress, isCancelled }) {
+  const pl = await fetchVimeoPlaylist(playlistUrl);
+  const track = vimeoTrackSegments(pl, playlistUrl, kind, trackId);
+  const blobs = [];
+  if (track.init) blobs.push(base64ToBlob(track.init));
+  else if (track.initUrl) {
+    const r = await fetchWithRetry(track.initUrl);
+    if (!r.ok) throw new Error(segmentFailureMessage(r.status));
+    blobs.push(await r.blob());
+  }
+  if (!track.urls.length) throw new Error('No segments in Vimeo playlist');
+
+  // Same batch size as HLS — big enough to saturate a link, small enough not to
+  // look like a burst worth throttling.
+  const BATCH = 10;
+  let bytes = blobs.reduce((n, b) => n + b.size, 0);
+  for (let i = 0; i < track.urls.length; i += BATCH) {
+    if (isCancelled?.()) throw new Error('Cancelled');
+    const batch = track.urls.slice(i, i + BATCH);
+    const parts = await Promise.all(batch.map(u => fetchWithRetry(u).then(r => {
+      if (!r.ok) throw new Error(segmentFailureMessage(r.status));
+      return r.blob();
+    })));
+    blobs.push(...parts);
+    bytes += parts.reduce((n, b) => n + b.size, 0);
+    onProgress?.(Math.min(i + batch.length, track.urls.length), track.urls.length, bytes);
+  }
+  return new Blob(blobs, { type: kind === 'audio' ? 'audio/mp4' : 'video/mp4' });
+}
+
+function base64ToBlob(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes]);
+}
+
+// Resolves a quality + track to a function that fetches that track and returns a
+// Blob, so the free single-track path and the combined path share one place that
+// knows how each kind is fetched. Null means this quality has no such track.
+function trackDownloader(quality, which) {
+  if (quality.kind === 'vimeo-json') {
+    const trackId = which === 'audio' ? quality.audioTrackId : quality.videoTrackId;
+    if (!trackId) return null;
+    return (opts) => downloadVimeoTrack(quality.playlistUrl, which, trackId, opts);
+  }
+  const url = which === 'audio' ? quality.audioUrl : quality.videoUrl;
+  if (!url) return null;
+  const fetchOne = quality.kind === 'hls' ? downloadRendition : downloadDirect;
+  return (opts) => fetchOne(url, opts);
+}
+
 // Direct progressive download (Vimeo/Wistia/Loom/YouTube muxed MP4) with byte
 // progress from the streamed response body.
 async function downloadDirect(url, { onProgress, isCancelled, mimeType }) {
@@ -836,7 +929,9 @@ function wasmSimdSupported() {
 
 // Whether a quality has to be merged to produce one playable file.
 function needsMerge(quality) {
-  return quality.kind === 'merge' || (quality.kind === 'hls' && !!quality.audioUrl);
+  return quality.kind === 'merge'
+    || (quality.kind === 'hls' && !!quality.audioUrl)
+    || (quality.kind === 'vimeo-json' && !!quality.audioTrackId);
 }
 
 // Deliberately plain-English and action-shaped: the user who hits this can't fix
@@ -953,9 +1048,13 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
     // job will actually fetch — an audio-only job on a merge-kind quality can
     // have its audio on a different host than the video, and scoping the rule
     // to videoUrl there would leave the real fetch unauthenticated (403).
-    if (quality.headers && (quality.headers.Referer || quality.headers.Origin)) {
+    // A vimeo-json quality addresses its tracks by id rather than URL and needs
+    // no headers at all, so there is nothing to scope a rule to — hence the
+    // sample-URL guard rather than a headers check alone.
+    const ruleSampleUrl = (mode === 'audio' && quality.audioUrl) || quality.videoUrl;
+    if (ruleSampleUrl && quality.headers && (quality.headers.Referer || quality.headers.Origin)) {
       ruleId = downloadRuleId(jobId);
-      await applyHeaderRules(ruleId, (mode === 'audio' && quality.audioUrl) || quality.videoUrl, quality.headers);
+      await applyHeaderRules(ruleId, ruleSampleUrl, quality.headers);
     }
 
     // Free single-track path: fetch only the requested rendition and save it as
@@ -963,14 +1062,13 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
     // videos too long for the in-browser merger. HLS renditions are playlists
     // (segment-by-segment); merge-kind ones are plain files.
     if (mode === 'video' || mode === 'audio') {
-      const url = mode === 'audio' ? quality.audioUrl : quality.videoUrl;
-      if (!url) {
+      const fetchTrack = trackDownloader(quality, mode);
+      if (!fetchTrack) {
         throw new Error(mode === 'audio'
           ? "This video's audio is inside the video file — use “Video only”, it already has sound."
           : 'No separate video track for this quality.');
       }
-      const fetchOne = quality.kind === 'hls' ? downloadRendition : downloadDirect;
-      const blob = await fetchOne(url, {
+      const blob = await fetchTrack({
         isCancelled, mimeType: mode === 'audio' ? 'audio/mp4' : 'video/mp4',
         onProgress: (d, t, b) => setPct(t ? (d / t) * 95 : 50, 'downloading', b)
       });
@@ -997,6 +1095,24 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       } else {
         const audioBlob = await downloadRendition(quality.audioUrl, {
           isCancelled, mimeType: 'audio/mp4',
+          onProgress: (d, t, b) => setPct(55 + (d / t) * 25, 'downloading', b)
+        });
+        if (isCancelled()) throw new Error('Cancelled');
+        setPct(82, 'merging');
+        await mergeAndSave(videoBlob, audioBlob, filename, tabId);
+      }
+
+    } else if (quality.kind === 'vimeo-json') {
+      const videoBlob = await downloadVimeoTrack(quality.playlistUrl, 'video', quality.videoTrackId, {
+        isCancelled,
+        onProgress: (d, t, b) => setPct(quality.audioTrackId ? (d / t) * 55 : (d / t) * 92, 'downloading', b)
+      });
+      if (!quality.audioTrackId) {
+        setPct(96, 'saving');
+        await saveBlob(videoBlob, `${filename}.mp4`);
+      } else {
+        const audioBlob = await downloadVimeoTrack(quality.playlistUrl, 'audio', quality.audioTrackId, {
+          isCancelled,
           onProgress: (d, t, b) => setPct(55 + (d / t) * 25, 'downloading', b)
         });
         if (isCancelled()) throw new Error('Cancelled');
@@ -1092,7 +1208,12 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         };
         const host = refererHosts[video.platform];
         let ruleId = null;
-        if (host && video.pageUrl && !video.url) {
+        // Vimeo's captured DASH playlist and its segments are signed for
+        // playback and verified to serve with no Referer and no cookies, so it
+        // gets no header rule — the request stays exactly what was tested.
+        if (video.jsonPlaylist) {
+          /* no header rule needed */
+        } else if (host && video.pageUrl && !video.url) {
           ruleId = resolveRuleId(tabId);
           await applyHeaderRules(ruleId, `https://${host}/`, { Referer: video.pageUrl });
         } else if (video.url) {
@@ -1120,11 +1241,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             // Carried so a download failure can report whether the playback
             // token had already lapsed by the time we hit the CDN.
             if (tokenExp) q.tokenExp = tokenExp.toISOString();
-            if (!q.headers && video.pageUrl && video.platform !== 'youtube') q.headers = { Referer: video.pageUrl };
+            if (!q.headers && video.pageUrl && video.platform !== 'youtube' && q.kind !== 'vimeo-json') {
+              q.headers = { Referer: video.pageUrl };
+            }
           });
           sendResponse({ ok: true, qualities, title: video.title });
         } catch (e) {
-          svdLog('resolve', `${video.platform}: ${e.message}`);
+          // Hash presence is the first thing to check on a Vimeo failure.
+          const hash = video.platform === 'vimeo' && !video.jsonPlaylist ? ` (h=${video.hParam ? 'yes' : 'no'})` : '';
+          svdLog('resolve', `${video.platform}${hash}: ${e.message}`);
           sendResponse({ ok: false, error: e.message });
         } finally {
           if (ruleId != null) await removeHeaderRules(ruleId);

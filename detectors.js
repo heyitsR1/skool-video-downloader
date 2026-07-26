@@ -86,10 +86,17 @@ function resolveUrl(url, baseUrl, parentQuery) {
 // player.vimeo.com/video/<id>/config returns progressive MP4s and an HLS
 // master. Domain-restricted embeds validate the Referer, so the caller applies
 // a DNR rule that re-attaches the Skool page URL before fetching.
+//
+// Any video that isn't fully public also needs its share hash (?h=), and there
+// the id alone is not enough: Vimeo answers 403 `PrivacyError` — the same status
+// a wrong hash gets, hence the two different messages below. Skool's own embed
+// builder keeps only `pathname.split('/')[1]` of the link a creator pasted, so
+// the iframe it renders carries no hash at all and this path simply cannot
+// resolve those videos; the wire-captured playlist below is their only route.
 async function resolveVimeoQualities(sourceId, pageUrl, hParam) {
   const url = `https://player.vimeo.com/video/${sourceId}/config${hParam ? `?h=${hParam}` : ''}`;
   const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(`Vimeo config fetch failed (${res.status}) — press play on the video first`);
+  if (!res.ok) throw new Error(vimeoConfigError(res.status, hParam));
   const cfg = await res.json();
 
   const out = [];
@@ -112,6 +119,100 @@ async function resolveVimeoQualities(sourceId, pageUrl, hParam) {
   if (!out.length) throw new Error('No downloadable Vimeo streams found');
   out.sort((a, b) => b.height - a.height);
   return out;
+}
+
+// "Press play first" is the right advice here — but only because the wire
+// capture below gives pressing play something to catch. Never say it for a
+// status that playing the video can't change.
+function vimeoConfigError(status, hParam) {
+  if (status !== 403) return `Vimeo config fetch failed (${status})`;
+  if (hParam) {
+    return 'Vimeo rejected this video’s share link (403) — it may be restricted to '
+      + 'certain sites. Press play on the video, let it start, then reopen this menu.';
+  }
+  return 'This Vimeo video is private, and the page embeds it without the share link '
+    + 'needed to read it. Press play on the video, let it start playing, then reopen '
+    + 'this menu — the player’s own stream is picked up automatically.';
+}
+
+// ── Vimeo (wire-captured DASH playlist) ─────────────────────────────────────
+// Vimeo's player on Chrome streams DASH from a signed
+// vimeocdn.com/…/v2/playlist/av/primary/playlist.json and never requests HLS, so
+// this JSON is the only Vimeo manifest a Chrome capture can ever see (Safari
+// would get the .m3u8 the config advertises). It is also the only route that
+// works when the page hides the video's share hash: the URL is already signed
+// for playback, and its segments serve 200 with no Referer and no cookies.
+//
+// Shape: { clip_id, base_url, video: [...], audio: [...] }, each rendition
+// carrying { id, width, height, bitrate, base_url, init_segment (base64),
+// segments: [{ url, size }] }. Every base_url is relative and they chain:
+// playlist URL → top-level base_url → rendition base_url → segment url (whose
+// own query string carries its signature, so relative resolution must keep it).
+// Segments are fMP4, so init + segments concatenated is a playable track and
+// video+audio go through the same ffmpeg remux as HLS.
+async function resolveVimeoJsonQualities(playlistUrl) {
+  const pl = await fetchVimeoPlaylist(playlistUrl);
+  const audio = bestVimeoAudio(pl);
+  const out = (pl.video || [])
+    .filter(v => (v.segments || []).length)
+    .sort((a, b) => (b.height || 0) - (a.height || 0) || (b.bitrate || 0) - (a.bitrate || 0))
+    .map(v => ({
+      label: heightLabel(v.height),
+      height: v.height || 0,
+      kind: 'vimeo-json',
+      // Only identifiers travel on the quality — the segment lists are re-read
+      // at download time. They can run to thousands of signed URLs per
+      // rendition, and the playlist is signed with an expiry anyway, so a fresh
+      // read beats shipping a stale copy through the popup and back.
+      playlistUrl,
+      videoTrackId: v.id,
+      audioTrackId: audio ? audio.id : null,
+      size: (v.segments || []).reduce((n, s) => n + (s.size || 0), 0)
+        + (audio ? (audio.segments || []).reduce((n, s) => n + (s.size || 0), 0) : 0),
+      container: 'mp4'
+    }));
+  if (!out.length) throw new Error('No downloadable Vimeo renditions in this stream');
+  // De-dupe identical heights (Vimeo lists several bitrates per resolution).
+  const seen = new Set();
+  return out.filter(q => (seen.has(q.label) ? false : (seen.add(q.label), true)));
+}
+
+async function fetchVimeoPlaylist(playlistUrl) {
+  const res = await fetch(playlistUrl);
+  if (!res.ok) {
+    throw new Error(res.status === 403 || res.status === 401
+      ? 'This Vimeo stream link has expired. Reload the lesson page, press play again, then retry.'
+      : `Vimeo playlist fetch failed (${res.status})`);
+  }
+  return await res.json();
+}
+
+// Vimeo flags every listenable track `audio_primary` (dubs and descriptions are
+// the ones that aren't), so the flag narrows the field and bitrate picks within it.
+function bestVimeoAudio(pl) {
+  const tracks = (pl.audio || []).filter(a => (a.segments || []).length);
+  const primary = tracks.filter(a => a.audio_primary);
+  return (primary.length ? primary : tracks).sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0] || null;
+}
+
+// Absolute, still-signed URLs for one track: the base64 init segment (fMP4
+// moov, no request of its own) plus every media segment in order.
+function vimeoTrackSegments(pl, playlistUrl, kind, trackId) {
+  const track = (pl[kind] || []).find(t => t.id === trackId);
+  if (!track) {
+    throw new Error('This Vimeo rendition is no longer in the stream. Reload the lesson page, press play, then retry.');
+  }
+  const base = new URL(track.base_url || './', new URL(pl.base_url || './', playlistUrl).href).href;
+  // init_segment (base64, saves a request) is what the player uses and what
+  // Vimeo has always sent; init_segment_url is the documented alternative and
+  // has been empty on every stream seen so far, so it stays a fallback.
+  const init = track.init_segment || null;
+  return {
+    init,
+    initUrl: !init && track.init_segment_url ? new URL(track.init_segment_url, base).href : null,
+    urls: (track.segments || []).map(s => new URL(s.url, base).href),
+    bytes: (track.segments || []).reduce((n, s) => n + (s.size || 0), 0)
+  };
 }
 
 // ── Wistia ──────────────────────────────────────────────────────────────────
@@ -294,6 +395,12 @@ async function resolveYouTubeQualities(sourceId) {
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 // Central entry: takes a registry video entry, returns { qualities, title? }.
 async function resolveQualities(video) {
+  // Vimeo's wire capture is a DASH playlist.json, not an HLS master, so it has
+  // to be claimed before the generic wire branch below would hand it to the
+  // m3u8 parser.
+  if (video.jsonPlaylist && video.url) {
+    return { qualities: await resolveVimeoJsonQualities(video.url) };
+  }
   // Wire captures (webRequest) carry the already-signed master playlist URL and
   // no sourceId — even when labelled loom/vimeo. Resolving them through the
   // platform API with an undefined sourceId can only fail (and for private

@@ -310,7 +310,9 @@ async function openQuality(video) {
   res.qualities.forEach((q) => {
     const btn = document.createElement('button');
     btn.className = 'quality-item';
-    const sub = q.kind === 'merge' ? chrome.i18n.getMessage('qualityKindMerged')
+    // vimeo-json is video + audio as separate segmented tracks, so it reads the
+    // same to the user as any other locally merged download.
+    const sub = q.kind === 'merge' || q.kind === 'vimeo-json' ? chrome.i18n.getMessage('qualityKindMerged')
       : q.kind === 'hls' ? chrome.i18n.getMessage('qualityKindHls')
       : chrome.i18n.getMessage('qualityKindMp4');
     btn.innerHTML =
@@ -341,8 +343,9 @@ function renderActionStep(qualities, video, getFilename) {
   const btnVideo = document.getElementById('btn-video-only');
   const btnAudio = document.getElementById('btn-audio-only');
 
-  // Best rendition that carries a separate audio track (list is sorted best-first).
-  const q = qualities.find((x) => x.audioUrl);
+  // Best rendition that carries a separate audio track (list is sorted
+  // best-first). vimeo-json names its tracks by id, not URL.
+  const q = qualities.find((x) => x.audioUrl || x.audioTrackId);
   if (!q) { stepBack.classList.add('hidden'); showQualityStep(true); return; }
 
   // Every quality with a separate audio track has to be merged, so if the

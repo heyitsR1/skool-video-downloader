@@ -8,11 +8,20 @@
 
 (() => {
   const seen = new Set();
+  // Which Vimeo share hash we've already reported per key. A video first spotted
+  // without its hash (the iframe hydrated before the lesson JSON landed, say)
+  // must be reportable again once the hash turns up — otherwise `seen` locks in
+  // the unusable version for the rest of the page's life.
+  const reportedHash = new Map();
 
   function report(videos) {
-    const fresh = videos.filter(v => v && v.key && !seen.has(v.key));
+    const fresh = videos.filter(v => v && v.key
+      && (!seen.has(v.key) || (v.hParam && v.hParam !== reportedHash.get(v.key))));
     if (!fresh.length) return;
-    fresh.forEach(v => seen.add(v.key));
+    fresh.forEach(v => {
+      seen.add(v.key);
+      if (v.hParam) reportedHash.set(v.key, v.hParam);
+    });
     chrome.runtime.sendMessage({ type: 'REGISTER_VIDEOS', videos: fresh }).catch(() => {});
   }
 
@@ -23,10 +32,30 @@
     const m = url.match(/loom\.com\/(?:share|embed)\/([0-9a-f]{20,})/i);
     return m ? m[1] : null;
   }
+  // Anything on Vimeo that isn't fully public needs its share hash on every
+  // player and API request, and the hash reaches us in two shapes:
+  //   ?h=<hash>            — embed codes and oEmbed-built iframes
+  //   vimeo.com/<id>/<hash> — what Vimeo's "Copy link" produces, and therefore
+  //                           what a creator pastes into Skool
+  // The path form matters because Skool's embed builder keeps only
+  // `pathname.split('/')[1]` and renders `player.vimeo.com/video/<id>?autoplay=…`,
+  // dropping the hash — so the lesson's stored link is often the only copy of it
+  // left on the page.
+  //
+  // Path segments that are Vimeo routes rather than hashes. A wrong hash fails
+  // exactly like a missing one, so this list is tidiness, not correctness.
+  const VIMEO_PATH_WORDS = /^(?:videos?|likes|albums|channels|collections|groups|settings|embed|config)$/i;
+  function vimeoHash(url) {
+    // Charset stays permissive: `[0-9a-f]+` silently truncates a hash at its
+    // first non-hex character, and a truncated hash is a wrong hash.
+    const q = url.match(/[?&]h=([^&"'\s\\]+)/);
+    if (q) return q[1];
+    const p = url.match(/(?:player\.)?vimeo\.com\/(?:video\/)?\d{6,}\/([A-Za-z0-9]{6,})/);
+    return p && !VIMEO_PATH_WORDS.test(p[1]) ? p[1] : null;
+  }
   function vimeoId(url) {
     const m = url.match(/(?:player\.)?vimeo\.com\/(?:video\/)?(\d{6,})/);
-    const h = url.match(/[?&]h=([0-9a-f]+)/);
-    return m ? { id: m[1], h: h ? h[1] : null } : null;
+    return m ? { id: m[1], h: vimeoHash(url) } : null;
   }
   function youtubeId(url) {
     const m = url.match(/(?:youtube(?:-nocookie)?\.com\/(?:embed\/|watch\?v=)|youtu\.be\/)([\w-]{11})/);
@@ -187,6 +216,42 @@
     return found;
   }
 
+  // Recover a Vimeo share hash for an id that's ALREADY been detected. Unlike
+  // the detection scan, this may read the whole page — including __NEXT_DATA__,
+  // which scanJson deliberately refuses to text-scan — because it can only
+  // enrich an existing detection, never invent one, so the phantom
+  // sibling-lesson hazard doesn't apply here. JSON escapes its slashes, hence
+  // the optional backslash before each one.
+  function vimeoHashFromPage(id) {
+    const re = new RegExp(
+      `vimeo\\.com\\\\?/(?:video\\\\?/)?${id}(?:\\\\?/([A-Za-z0-9]{6,})|[?&]h=([A-Za-z0-9]+))`, 'g');
+    for (const s of document.querySelectorAll('script:not([src])')) {
+      const t = s.textContent || '';
+      if (!t.includes(id)) continue;
+      for (const m of t.matchAll(re)) {
+        const h = m[1] || m[2];
+        if (h && !VIMEO_PATH_WORDS.test(h)) return h;
+      }
+    }
+    return null;
+  }
+
+  // Both scanners can report the same video, and today the JSON one wins purely
+  // by running first. When only one of them carries the Vimeo share hash, that's
+  // the one worth keeping — the hash-less twin resolves to a 403.
+  function pickBest(videos) {
+    const byKey = new Map();
+    for (const v of videos) {
+      const prev = byKey.get(v.key);
+      if (!prev) byKey.set(v.key, v);
+      else if (!prev.hParam && v.hParam) byKey.set(v.key, v);
+    }
+    for (const v of byKey.values()) {
+      if (v.platform === 'vimeo' && !v.hParam) v.hParam = vimeoHashFromPage(v.sourceId);
+    }
+    return [...byKey.values()];
+  }
+
   function scan() {
     const json = scanJson();
     const dom = scanDom();
@@ -197,7 +262,7 @@
         'JSON:', json.map(v => v.key),
         '| DOM(iframe):', dom.map(v => v.key));
     }
-    report([...json, ...dom]);
+    report(pickBest([...json, ...dom]));
   }
 
   // Fresh full page load — clear the previous page's captured videos, then scan.
@@ -221,6 +286,7 @@
     if (now !== lastPath) {
       lastPath = now;
       seen.clear();
+      reportedHash.clear();
       chrome.runtime.sendMessage({ type: 'CLEAR_TAB', reason: 'spa-nav', path: now }).catch(() => {});
       scan();
     }
@@ -256,7 +322,7 @@
 
   // Let the popup nudge a rescan on demand.
   chrome.runtime.onMessage.addListener((msg, _s, respond) => {
-    if (msg.type === 'RESCAN') { seen.clear(); scan(); respond?.({ ok: true }); }
+    if (msg.type === 'RESCAN') { seen.clear(); reportedHash.clear(); scan(); respond?.({ ok: true }); }
     if (msg.type === 'GET_PAGE_TITLE') respond?.({ title: document.title.replace(/\s*[-|]\s*Skool.*$/i, '').trim() });
     if (msg.type === 'GET_PAGE_CONTEXT') respond?.({ title: currentLessonTitle(), frame: grabVideoFrame() });
     return true;
