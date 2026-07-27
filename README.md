@@ -42,16 +42,23 @@ node scripts/build.mjs   # → dist/*.zip
 
 ```bash
 # 1. bump "version" in manifest.json
+# 2. add the version's entry at the top of CHANGELOG.md
 node scripts/build.mjs
 git commit -am "vX.Y.Z: ..." && git push
 gh release create vX.Y.Z dist/skool-video-downloader-full-vX.Y.Z.zip \
-  --title "vX.Y.Z — full (sideload) build"
+  --title "vX.Y.Z — full (sideload) build" --notes-file <(...)   # from CHANGELOG.md
 node scripts/publish-version.mjs          # ← tells existing users an update exists
 ```
 
-That last step is not optional. The popup's update banner reads its version
-from the Worker's KV config, so skipping it means every sideload user is told
-they are current no matter how many releases have shipped.
+`CHANGELOG.md` is the single place a release is described in customer-facing
+words; the GitHub release notes are written from it, not the reverse. Write it
+before tagging — reconstructing it later from commit messages loses the "what
+this meant for the user" half, which is the part support actually needs.
+
+The `publish-version.mjs` step is not optional. The popup's update banner and
+the /updates page both read their version from the Worker's KV config, so
+skipping it means every sideload user is told they are current no matter how
+many releases have shipped.
 
 The Chrome Web Store zip is a separate manual upload to the dashboard. Once
 that listing is actually **live** (not just submitted), publish its version too:
