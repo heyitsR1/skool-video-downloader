@@ -3,17 +3,34 @@
 // resolution → enqueue. A live download-manager panel renders queue state from
 // background QUEUE_* broadcasts (progress, speed, cancel).
 
-// Dodo Payments checkout — every new customer since v1.3.0. Two separate
-// products rather than one plan with cycles (Freemius's shape), so each price
-// gets its own hosted checkout URL. The amount charged lives on the Dodo
-// product; the copy below doesn't drive billing.
+// ── Which processor sells ─────────────────────────────────────────────────────
+// 'freemius' | 'dodo'.
 //
-// Legacy Freemius keys still activate — that fallback lives in the licensing
-// Worker, not here — but nothing in the UI sells Freemius any more.
-//
-// redirect_url lands the buyer on our welcome page, which reads ?license_key=
-// out of the URL. Dodo also emails the key; the page exists so a buyer who
-// never checks their inbox is never stuck.
+// 2026-07-28: back to 'freemius'. Dodo Payments' compliance team ruled this
+// product outside their Merchant Acceptance Policy and asked us to stop selling
+// through them. This flag steers ONLY the checkout links. Activation is
+// untouched: the licensing Worker accepts keys from BOTH processors and always
+// will, so every customer from either era keeps their entitlement. Flip back to
+// 'dodo' if that decision is reversed — nothing else has to change.
+const PROCESSOR = 'freemius';
+
+// Freemius checkout — Skool Video Downloader (product 33457, plan 54961,
+// pricing 72637). MV3 popup CSP forbids loading Freemius's checkout.min.js, so
+// we open the hosted popup-mode checkout URL directly in a tab. The /plan/
+// segment takes the plan id (not the pricing id); one pricing object under that
+// plan carries both cycles ($9.99/mo, $99.99 lifetime) and billing_cycle
+// preselects which it opens on. The annual cycle still exists on the pricing
+// object but is deliberately not offered anywhere in the UI.
+// NOTE: the charged amount lives on Freemius's pricing object (id 72637) —
+// change it there; the copy in popup.html doesn't drive billing.
+const FS_PRODUCT_ID = 33457;
+const FS_PLAN_ID = 54961;
+const FS_CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PLAN_ID}/`;
+
+// Dodo Payments — dormant while PROCESSOR is 'freemius'. Two separate products
+// rather than one plan with cycles (Freemius's shape), so each price has its own
+// hosted checkout URL. redirect_url lands the buyer on our welcome page, which
+// reads ?license_key= out of the URL.
 const DODO_CHECKOUT = 'https://checkout.dodopayments.com/buy';
 const DODO_MONTHLY_PRODUCT = 'pdt_0Njs5UbIatGMhdS1azn5x';
 const DODO_LIFETIME_PRODUCT = 'pdt_0Njs5dir2LdaL8u9azm7j';
@@ -21,13 +38,17 @@ const DODO_LIFETIME_PRODUCT = 'pdt_0Njs5dir2LdaL8u9azm7j';
 // here anyway, and a purchase redirect shouldn't need an extra hop.
 const WELCOME_URL = 'https://skoolvideodownload.com/welcome';
 
-function checkoutUrl(productId) {
+function dodoCheckoutUrl(productId) {
   const params = new URLSearchParams({ quantity: '1', redirect_url: WELCOME_URL });
   return `${DODO_CHECKOUT}/${productId}?${params.toString()}`;
 }
 
-const CHECKOUT_MONTHLY = checkoutUrl(DODO_MONTHLY_PRODUCT);
-const CHECKOUT_LIFETIME = checkoutUrl(DODO_LIFETIME_PRODUCT);
+const CHECKOUT_MONTHLY = PROCESSOR === 'dodo'
+  ? dodoCheckoutUrl(DODO_MONTHLY_PRODUCT)
+  : `${FS_CHECKOUT}?billing_cycle=monthly`;
+const CHECKOUT_LIFETIME = PROCESSOR === 'dodo'
+  ? dodoCheckoutUrl(DODO_LIFETIME_PRODUCT)
+  : `${FS_CHECKOUT}?billing_cycle=lifetime`;
 
 // Cancel page, offered when an automatic monthly cancellation after a lifetime
 // upgrade didn't go through.

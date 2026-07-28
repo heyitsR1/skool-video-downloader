@@ -14,6 +14,21 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## v1.3.7 — 2026-07-28
+
+Checkout moves back to Freemius. Nothing else about the extension changes.
+
+Dodo Payments, the processor introduced in v1.3.0, notified us on 2026-07-27
+that this product falls outside their Merchant Acceptance Policy and asked us to
+stop selling through them. The Buy buttons therefore point at Freemius again —
+the same checkout every customer used before v1.3.0.
+
+**If you bought a licence between v1.3.0 and v1.3.6, nothing changes for you.**
+Your key still activates, still revalidates, and still carries whatever tier you
+paid for. Both processors are accepted permanently; the licence server decides
+which one to ask from the shape of the key you type, so neither era of key can
+be mistaken for the other. There is nothing you need to do.
+
 ## v1.3.6 — 2026-07-28
 
 Hardening ahead of the Chrome Web Store release of this work.
