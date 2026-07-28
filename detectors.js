@@ -252,8 +252,13 @@ async function resolveWistiaQualities(sourceId) {
 // the "open it on loom.com once" hint.
 // Cheap "is there really a video behind this URL?" probe. HEAD first; some CDNs
 // don't answer it, so fall back to a 1-byte ranged GET, which still returns the
-// full length in Content-Range. Anything under the floor — or a URL we can't
-// measure at all — is not offered as a download.
+// full length in Content-Range.
+//
+// A URL we can't measure is allowed through. This check is an optimisation — it
+// moves a known failure ahead of a long download — not the safety net; the size
+// guard at save time is, and it sees the actual bytes. Refusing what we merely
+// failed to measure would trade a rare bad file for blocking working downloads
+// on any CDN that answers neither probe, which is the worse deal.
 const MIN_PLAUSIBLE_VIDEO_BYTES = 64 * 1024;
 async function isPlausiblyVideo(url) {
   const sizeOf = (res) => {
@@ -270,7 +275,7 @@ async function isPlausiblyVideo(url) {
       if (size != null) return size >= MIN_PLAUSIBLE_VIDEO_BYTES;
     } catch { /* try the next probe */ }
   }
-  return false; // couldn't measure it — don't hand the user a maybe
+  return true; // unmeasurable — let it run; assertUsableVideo still has the last word
 }
 
 async function resolveLoomQualities(sourceId) {

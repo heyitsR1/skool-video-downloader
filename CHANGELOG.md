@@ -14,6 +14,17 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## v1.3.6 — 2026-07-28
+
+Hardening ahead of the Chrome Web Store release of this work.
+
+The pre-download size check added in v1.3.5 refused any video whose length it
+couldn't measure. That's the wrong default: it trades a rare bad file for
+blocking working downloads on any CDN that answers neither a HEAD nor a ranged
+request. The check is an optimisation — it moves a known failure ahead of a long
+download — and the size guard at save time, which sees the real bytes, remains
+the actual safety net. Unmeasurable videos now proceed.
+
 ## v1.3.5 — 2026-07-28
 
 Makes private Loom lessons download from one obvious button, and fixes a
