@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "default_locale": "en",
   "minimum_chrome_version": "116",
   "description": "__MSG_extDescription__",
@@ -12,7 +12,8 @@
     "activeTab",
     "declarativeNetRequestWithHostAccess",
     "alarms",
-    "offscreen"
+    "offscreen",
+    "unlimitedStorage"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"

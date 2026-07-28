@@ -14,6 +14,34 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## v1.3.3 — 2026-07-28
+
+Stops the extension telling people their disk is full when it isn't.
+
+A download that failed while handing the finished video to Chrome always
+reported "your disk is out of space" — regardless of what had actually gone
+wrong. Reports arrived contradicting themselves in a single sentence: needs
+about 530 MB, 10.7 GB available. The real error was captured and then thrown
+away, so those failures were undiagnosable.
+
+- "Out of space" is now claimed only when the error really is a quota error, or
+  the free space really is less than the video needs. Any other failure is
+  reported as itself, and says plainly that disk space is not the problem.
+- The failure message now points at the one step known to clear stale leftovers:
+  fully quit and reopen Chrome. The extension purges its temporary storage on
+  startup, which does what an in-session purge cannot.
+- Both attempts' errors, the blob sizes, and the storage quota are written to the
+  debug log, so the next report says what happened.
+- Fixed the debug log dropping lines. Writes are read-modify-write on one key and
+  two overlapping calls silently discarded one another — which is exactly how the
+  cause of a failure got lost, every time, one tick before the failure itself was
+  logged. Writes are now serialised, and a problem report waits for pending ones.
+- Added the `unlimitedStorage` permission. Every save moves hundreds of megabytes
+  through CacheStorage; there is no reason to do that against a shared quota.
+- The retry after a purge now drops its handle to the old cache first. Chrome
+  defers reclaiming a deleted cache while one is still live, so the retry could
+  run against storage the purge had not actually freed.
+
 ## v1.3.2 — 2026-07-27
 
 Fixes a save failure that showed up as `Save did not start @82%`.

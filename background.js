@@ -12,10 +12,10 @@ const WORKER_URL = 'https://skool-dl-license.aarohan567.workers.dev';
 
 // Problem reports go to the shared tailsgate reports Worker (the same one the
 // Whop downloader uses), tagged with a product field so they land in one admin
-// dashboard. Primary is the tailsgate.com proxy (some ISPs/antivirus block
-// *.workers.dev); the workers.dev URL is the fallback.
+// dashboard. Primary is this product's own domain proxy (some ISPs/antivirus
+// block *.workers.dev); the workers.dev URL is the fallback.
 const REPORT_API_BASES = [
-  'https://tailsgate.com/api/license',
+  'https://skoolvideodownload.com/api/license',
   'https://whop-dl-license.aarohan567.workers.dev'
 ];
 
@@ -25,12 +25,23 @@ const REPORT_API_BASES = [
 // to make one-click problem reports diagnosable, not to trace every action.
 // Persisted in storage.local so it survives service-worker restarts.
 const DEBUG_LOG_MAX = 40;
-async function svdLog(context, message) {
-  try {
-    const { debugLog = [] } = await chrome.storage.local.get('debugLog');
-    debugLog.push({ ts: new Date().toISOString(), context, message: String(message).slice(0, 300) });
-    await chrome.storage.local.set({ debugLog: debugLog.slice(-DEBUG_LOG_MAX) });
-  } catch { /* logging must never break anything */ }
+// Every write is read-modify-write on one storage key, so two overlapping calls
+// both read the same array and the second's set() discards the first's line.
+// That is not theoretical: a failure logs its cause and then the job's catch
+// logs the failure itself one tick later, and the cause — the line support
+// actually needs — was the one that got dropped. Callers rarely await svdLog,
+// so the ordering has to be enforced here: chain every write onto the last.
+let logChain = Promise.resolve();
+function svdLog(context, message) {
+  const ts = new Date().toISOString();
+  logChain = logChain.then(async () => {
+    try {
+      const { debugLog = [] } = await chrome.storage.local.get('debugLog');
+      debugLog.push({ ts, context, message: String(message).slice(0, 300) });
+      await chrome.storage.local.set({ debugLog: debugLog.slice(-DEBUG_LOG_MAX) });
+    } catch { /* logging must never break anything */ }
+  });
+  return logChain;
 }
 
 // Skool-native (Mux) masters carry a signed-playback JWT in ?token=. Decoding
@@ -483,6 +494,7 @@ async function getVersionStatus() {
 // when the network path is blocked.
 async function sendErrorReport(note, email, tabId) {
   await registryReady; // 'detected' must reflect the restored registry, not a cold Map
+  await logChain;      // and the log must include the failure the user is reporting
   const { debugLog = [] } = await chrome.storage.local.get('debugLog');
   const [license, installId] = await Promise.all([
     getLicenseStatus().catch(() => null),
@@ -807,38 +819,89 @@ async function downloadDirect(url, { onProgress, isCancelled, mimeType }) {
 //      until the origin's share of the quota is gone.
 //   2. A genuinely full disk.
 //
-// Purge-and-retry-once clears (1) — it's safe because offscreenLock serialises
-// every caller, so no other job has live entries here. If the retry also fails
-// it's (2), and the user needs to hear about disk space, not Chrome internals.
+// Purge-and-retry-once targets (1) — it's safe because offscreenLock serialises
+// every caller, so no other job has live entries here.
+//
+// What the retry failing does NOT establish is (2). This code used to assume it
+// did and told the user their disk was full no matter what had actually gone
+// wrong; reports came back stating the extension needed 530 MB and Chrome had
+// 10.7 GB free, in the same sentence. So the retry's own error is now logged and
+// inspected, and "out of space" is claimed only when the error or the numbers
+// say so. Anything else is reported as itself.
 async function putBlobs(entries) {
   let cache = await caches.open(BLOB_CACHE);
   try {
     await Promise.all(entries.map(([key, blob]) => cache.put(key, new Response(blob))));
     return cache;
   } catch (first) {
+    // Chrome defers reclaiming a deleted cache while a Cache handle is still
+    // live, so purging with `cache` still referenced can free nothing and leave
+    // the retry running against unchanged storage. Dropping the reference first
+    // doesn't force the reclaim — GC timing isn't ours — but it's what makes it
+    // possible at all.
+    cache = null;
     await purgeBlobCache();
     cache = await caches.open(BLOB_CACHE);
     try {
       await Promise.all(entries.map(([key, blob]) => cache.put(key, new Response(blob))));
       return cache;
     } catch (second) {
-      const err = new Error(await outOfSpaceMessage(entries));
+      const err = new Error(await blobPutFailureMessage(entries, second));
       err.cause = second;
-      svdLog('cache', `blob put failed after purge: ${first?.message || first}`);
+      // Both attempts, named and sized: the retry's error is the one that
+      // survived a purge, and it is what tells disk pressure apart from
+      // everything else that can break a 500 MB CacheStorage write.
+      await svdLog('cache', `blob put failed (${describeEntries(entries)})`
+        + ` first=${describeError(first)} second=${describeError(second)}`
+        + ` ${await describeStorage()}`);
       throw err;
     }
   }
 }
 
-async function outOfSpaceMessage(entries) {
-  const needed = entries.reduce((n, [, blob]) => n + blob.size, 0);
-  let detail = '';
+function describeError(e) {
+  if (!e) return 'unknown';
+  return `${e.name || 'Error'}: ${String(e.message || e).slice(0, 120)}`;
+}
+
+function describeEntries(entries) {
+  return entries.map(([, blob]) => formatGB(blob.size)).join('+');
+}
+
+async function describeStorage() {
   try {
     const { quota = 0, usage = 0 } = await navigator.storage.estimate();
-    const free = Math.max(0, quota - usage);
-    detail = ` It needs about ${formatGB(needed)} of free space and Chrome currently has ${formatGB(free)} available.`;
-  } catch { /* estimate() is best-effort; the advice below stands without it */ }
-  return `Couldn't save the video — your disk is out of space.${detail} Free up some room and download again.`;
+    return `quota=${formatGB(quota)} usage=${formatGB(usage)}`;
+  } catch { return 'quota=unavailable'; }
+}
+
+// Only say "out of space" when the numbers actually support it. The previous
+// version said it unconditionally, which produced reports whose own message
+// disproved itself — "needs about 530 MB and Chrome currently has 10.7 GB
+// available" — and buried the real error in an unread `cause`. A wrong
+// diagnosis is worse than an unhelpful one: it sends the user off to delete
+// files while the actual fault goes unreported.
+async function blobPutFailureMessage(entries, error) {
+  const needed = entries.reduce((n, [, blob]) => n + blob.size, 0);
+  let free = null;
+  try {
+    const { quota = 0, usage = 0 } = await navigator.storage.estimate();
+    free = Math.max(0, quota - usage);
+  } catch { /* estimate() is best-effort */ }
+
+  const quotaError = error?.name === 'QuotaExceededError';
+  if (quotaError || (free !== null && free < needed)) {
+    const detail = free === null ? ''
+      : ` It needs about ${formatGB(needed)} of free space and Chrome currently has ${formatGB(free)} available.`;
+    return `Couldn't save the video — your disk is out of space.${detail} Free up some room and download again.`;
+  }
+
+  // Not a space problem. Say so plainly, give the one step that is known to
+  // clear stale leftovers (the startup purge does what an in-session purge
+  // cannot), and carry the real error so the report is diagnosable.
+  return 'Couldn’t hand the finished video to Chrome for saving — this is not a disk-space problem, '
+    + 'your disk has room. Fully quit Chrome and reopen it, then download this lesson again. '
+    + `If it fails a second time, use “Report this error” so we can see what happened. (${describeError(error)})`;
 }
 
 function formatGB(bytes) {
