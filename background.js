@@ -146,7 +146,15 @@ function addVideo(tabId, entry) {
     // A later, hash-less sighting of the same Vimeo video must not erase a share
     // hash an earlier one carried: without it resolution 403s.
     if (patch.hParam == null && prev.hParam != null) delete patch.hParam;
+    // Same rule for everything else a merge can hollow out. A wire capture and a
+    // page-scan entry now share a key for Loom, and each knows things the other
+    // doesn't — the capture has the signed master, the page scan has the id, the
+    // title and the source. Whichever lands second must not null out the first.
+    for (const k of ['title', 'sourceId', 'url', 'headers', 'src', 'pageUrl']) {
+      if (patch[k] == null && prev[k] != null) delete patch[k];
+    }
     Object.assign(prev, patch);
+    if (patch.url) svdLog('detect', `~${prev.platform} upgraded to wire master (${prev.key.slice(0, 40)})`);
   }
   persistRegistry();
   chrome.tabs.sendMessage(tabId, { type: 'VIDEO_DETECTED' }).catch(() => {});
@@ -200,8 +208,19 @@ try {
           ? (url.match(/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//) || [])[1]
           : null;
 
+        // A Loom master is luna.loom.com/id/<session id>/rev/…, and that id is
+        // the same one the lesson's videoLink carries — so this capture and the
+        // page-scan entry are the same video. Keying them the same way collapses
+        // them into one row that holds both the id and the signed master, which
+        // is what the user needs: the page-scan entry alone resolves through
+        // Loom's API and can come back with nothing playable, and a customer
+        // shown two rows has no way to know which one works.
+        const loomId = platform === 'loom'
+          ? (url.match(/\/id\/([0-9a-f]{20,})/i) || [])[1] || null
+          : null;
+
         registryReady.then(() => addVideo(details.tabId, {
-          key: isVimeoJson ? `vimeo-json:${clipId || url}` : `hls:${url}`,
+          key: isVimeoJson ? `vimeo-json:${clipId || url}` : (loomId ? `loom:${loomId}` : `hls:${url}`),
           platform,
           // A played Vimeo video lists twice — once from its embed, once from
           // this capture — and the two can't be linked (the playlist URL carries
@@ -213,13 +232,7 @@ try {
           url,
           headers,
           jsonPlaylist: isVimeoJson || undefined,
-          // A Loom master is luna.loom.com/id/<session id>/rev/…, and that id is
-          // the same one the lesson's videoLink carries. Carrying it lets the
-          // popup name the row for the lesson on screen instead of showing a
-          // stack of identical "Loom" entries.
-          sourceId: platform === 'loom'
-            ? (url.match(/\/id\/([0-9a-f]{20,})/i) || [])[1] || null
-            : null,
+          sourceId: loomId,
           title: null
         }));
       } catch {}

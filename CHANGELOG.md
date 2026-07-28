@@ -14,6 +14,29 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## v1.3.5 — 2026-07-28
+
+Makes private Loom lessons download from one obvious button, and fixes a
+regression v1.3.4 introduced.
+
+**A captured video is used again.** v1.3.4 started recording the Loom id on
+videos captured from the player so the popup could name them — and that
+inadvertently sent those captures back through Loom's API, the exact path the
+capture exists to avoid. Pressing play no longer helps if the extension then
+ignores what it caught. A captured stream is now always preferred over an API
+lookup.
+
+**One row per video, not two.** A Loom lesson could appear twice: once found on
+the page, once captured from the player. Only the second one works for videos
+private to a classroom, and nothing told you which was which. They are now a
+single entry that uses whichever source can actually fetch the video.
+
+**Failures happen before the wait, not after it.** Loom answers for videos it
+won't serve with a token-sized stub — one customer received 24,877 bytes after a
+long download. The size is now checked before anything is offered for download,
+and the message says what actually fixes it: press play on the lesson in Skool,
+then download.
+
 ## v1.3.4 — 2026-07-28
 
 Stops the extension saving files that have no video in them, and makes a page

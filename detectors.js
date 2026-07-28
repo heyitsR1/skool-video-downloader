@@ -250,6 +250,29 @@ async function resolveWistiaQualities(sourceId) {
 // cookies ride along via credentials:'include', so member-only videos the user
 // can watch resolve too — an anonymous request for a private video 404s, hence
 // the "open it on loom.com once" hint.
+// Cheap "is there really a video behind this URL?" probe. HEAD first; some CDNs
+// don't answer it, so fall back to a 1-byte ranged GET, which still returns the
+// full length in Content-Range. Anything under the floor — or a URL we can't
+// measure at all — is not offered as a download.
+const MIN_PLAUSIBLE_VIDEO_BYTES = 64 * 1024;
+async function isPlausiblyVideo(url) {
+  const sizeOf = (res) => {
+    if (!res.ok && res.status !== 206) return null;
+    const range = res.headers.get('content-range');
+    const fromRange = range && Number(range.split('/')[1]);
+    if (Number.isFinite(fromRange) && fromRange > 0) return fromRange;
+    const len = Number(res.headers.get('content-length'));
+    return Number.isFinite(len) && len > 0 ? len : null;
+  };
+  for (const init of [{ method: 'HEAD' }, { method: 'GET', headers: { Range: 'bytes=0-0' } }]) {
+    try {
+      const size = sizeOf(await fetch(url, { ...init, credentials: 'include' }));
+      if (size != null) return size >= MIN_PLAUSIBLE_VIDEO_BYTES;
+    } catch { /* try the next probe */ }
+  }
+  return false; // couldn't measure it — don't hand the user a maybe
+}
+
 async function resolveLoomQualities(sourceId) {
   const endpoints = [
     `https://www.loom.com/api/campaigns/sessions/${sourceId}/raw-url`,
@@ -272,11 +295,25 @@ async function resolveLoomQualities(sourceId) {
       if (data?.url) {
         const isHls = data.url.includes('.m3u8');
         if (isHls) return await resolveMuxQualities(data.url, { Referer: `https://www.loom.com/share/${sourceId}` });
+        // Loom answers this endpoint for videos it won't actually serve us with
+        // a token-sized stub — one customer got 24,877 bytes. Downloading it
+        // takes a while and yields an unplayable file, so the size check that
+        // used to happen at save time (after the wait) happens here instead: ask
+        // the CDN how big it is before offering it as a download.
+        if (!await isPlausiblyVideo(data.url)) continue;
         return [{ label: 'Original', height: 0, kind: 'mp4', videoUrl: data.url, container: 'mp4' }];
       }
     } catch { /* try next endpoint */ }
   }
-  throw new Error('Could not resolve this Loom video — open it on loom.com once (log in if it is private), then retry');
+  // Both endpoints refused, or answered with something that isn't a video. For
+  // a Skool lesson the fix is almost always the player, not loom.com: pressing
+  // play makes the extension capture the signed master the player itself is
+  // handed, which is the only thing that works for private embeds.
+  throw new Error(
+    'This Loom video can’t be fetched directly — it’s private to the classroom. '
+    + 'Press play on it in Skool, let it run for a few seconds, then open this extension again '
+    + 'and download it. (If it still fails, open the video on loom.com once, logged in, and retry.)'
+  );
 }
 
 // ── YouTube ─────────────────────────────────────────────────────────────────
@@ -401,12 +438,20 @@ async function resolveQualities(video) {
   if (video.jsonPlaylist && video.url) {
     return { qualities: await resolveVimeoJsonQualities(video.url) };
   }
-  // Wire captures (webRequest) carry the already-signed master playlist URL and
-  // no sourceId — even when labelled loom/vimeo. Resolving them through the
-  // platform API with an undefined sourceId can only fail (and for private
-  // embeds the wire URL is the ONLY thing that works: it rides the signature
-  // the player itself was granted). Parse the master directly.
-  if (video.url && !video.sourceId) {
+  // Wire captures (webRequest) carry the already-signed master playlist URL.
+  // For private embeds that URL is the ONLY thing that works: it rides the
+  // signature the player itself was granted, where the platform API returns
+  // nothing usable. So a captured master always wins over an API lookup.
+  //
+  // This used to be gated on `!video.sourceId`, on the assumption that wire
+  // entries never carry one. v1.3.4 broke that assumption — it started
+  // recording the Loom session id on wire captures so the popup could name the
+  // row — and silently routed every captured Loom back through the API path
+  // this branch exists to avoid. Gate on what actually matters: whether we hold
+  // a signed master. (jsonPlaylist captures were claimed above; anything still
+  // carrying a `url` here is an HLS master off the wire, since the page-scan
+  // detectors only ever produce a sourceId.)
+  if (video.url) {
     return { qualities: await resolveMuxQualities(video.url, video.headers) };
   }
   switch (video.platform) {
