@@ -103,8 +103,8 @@
   "reportSending": { "message": "Enviando…" },
   "reportSentBtn": { "message": "✓ Enviado — ¡gracias!" },
   "reportSentEmailNote": { "message": "Te escribiremos cuando esté solucionado." },
-  "reportClipboardFallback": { "message": "No se pudo contactar con nuestro servidor — el reporte se copió al portapapeles. Pégalo en un correo a support@tailsgate.com." },
-  "reportServerError": { "message": "No se pudo contactar con nuestro servidor — escribe a support@tailsgate.com." },
+  "reportClipboardFallback": { "message": "No se pudo contactar con nuestro servidor — el reporte se copió al portapapeles. Pégalo en un correo a support@skoolvideodownload.com." },
+  "reportServerError": { "message": "No se pudo contactar con nuestro servidor — escribe a support@skoolvideodownload.com." },
 
   "pricingTitle": { "message": "Hazte ilimitado" },
   "pricingSub": { "message": "Tu plan gratuito incluye 5 descargas a la semana. Desbloquea descargas ilimitadas en todas las calidades." },

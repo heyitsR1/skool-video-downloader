@@ -103,8 +103,8 @@
   "reportSending": { "message": "Wird gesendet…" },
   "reportSentBtn": { "message": "✓ Gesendet — danke!" },
   "reportSentEmailNote": { "message": "Wir schreiben dir, sobald es behoben ist." },
-  "reportClipboardFallback": { "message": "Unser Server war nicht erreichbar — der Bericht wurde in die Zwischenablage kopiert. Bitte per E-Mail an support@tailsgate.com senden." },
-  "reportServerError": { "message": "Unser Server war nicht erreichbar — bitte schreib an support@tailsgate.com." },
+  "reportClipboardFallback": { "message": "Unser Server war nicht erreichbar — der Bericht wurde in die Zwischenablage kopiert. Bitte per E-Mail an support@skoolvideodownload.com senden." },
+  "reportServerError": { "message": "Unser Server war nicht erreichbar — bitte schreib an support@skoolvideodownload.com." },
 
   "pricingTitle": { "message": "Unbegrenzt freischalten" },
   "pricingSub": { "message": "Dein kostenloser Plan umfasst 5 Downloads pro Woche. Schalte unbegrenzte Downloads in jeder Qualität frei." },

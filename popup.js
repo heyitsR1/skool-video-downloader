@@ -526,9 +526,9 @@ function activationErrorMessage(code) {
     // had simply run out of slots. Note a slot is consumed per INSTALL, so
     // reinstalling the extension uses a fresh one.
     case 'license_utilized':
-      return t('licenseUtilized', 'This license is already active on all of its allowed installs. Reinstalling the extension uses up a slot — email support@tailsgate.com and we\'ll free one for you right away.');
+      return t('licenseUtilized', 'This license is already active on all of its allowed installs. Reinstalling the extension uses up a slot — email support@skoolvideodownload.com and we\'ll free one for you right away.');
     case 'license_expired':
-      return t('licenseExpired', 'That license has expired. If you believe it should still be active, email support@tailsgate.com.');
+      return t('licenseExpired', 'That license has expired. If you believe it should still be active, email support@skoolvideodownload.com.');
     case 'activation_limit':
       return t('licenseLimit', 'That license has reached its activation limit. Contact support and we\'ll free up a slot.');
     case 'wrong_product':

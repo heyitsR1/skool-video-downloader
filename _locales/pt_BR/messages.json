@@ -103,8 +103,8 @@
   "reportSending": { "message": "Enviando…" },
   "reportSentBtn": { "message": "✓ Enviado — obrigado!" },
   "reportSentEmailNote": { "message": "Vamos te avisar por e-mail quando for corrigido." },
-  "reportClipboardFallback": { "message": "Não conseguimos falar com nosso servidor — o relatório foi copiado para a área de transferência. Cole em um e-mail para support@tailsgate.com." },
-  "reportServerError": { "message": "Não conseguimos falar com nosso servidor — envie um e-mail para support@tailsgate.com." },
+  "reportClipboardFallback": { "message": "Não conseguimos falar com nosso servidor — o relatório foi copiado para a área de transferência. Cole em um e-mail para support@skoolvideodownload.com." },
+  "reportServerError": { "message": "Não conseguimos falar com nosso servidor — envie um e-mail para support@skoolvideodownload.com." },
 
   "pricingTitle": { "message": "Assine o ilimitado" },
   "pricingSub": { "message": "Seu plano grátis inclui 5 downloads por semana. Desbloqueie downloads ilimitados em qualquer qualidade." },

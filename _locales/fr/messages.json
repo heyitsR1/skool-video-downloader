@@ -103,8 +103,8 @@
   "reportSending": { "message": "Envoi…" },
   "reportSentBtn": { "message": "✓ Envoyé — merci !" },
   "reportSentEmailNote": { "message": "Nous vous écrirons une fois le problème résolu." },
-  "reportClipboardFallback": { "message": "Impossible de joindre notre serveur — le rapport a été copié dans le presse-papiers. Collez-le dans un email à support@tailsgate.com." },
-  "reportServerError": { "message": "Impossible de joindre notre serveur — écrivez-nous à support@tailsgate.com." },
+  "reportClipboardFallback": { "message": "Impossible de joindre notre serveur — le rapport a été copié dans le presse-papiers. Collez-le dans un email à support@skoolvideodownload.com." },
+  "reportServerError": { "message": "Impossible de joindre notre serveur — écrivez-nous à support@skoolvideodownload.com." },
 
   "pricingTitle": { "message": "Passer à l'illimité" },
   "pricingSub": { "message": "Votre forfait gratuit couvre 5 téléchargements par semaine. Débloquez des téléchargements illimités dans toutes les qualités." },
