@@ -171,9 +171,21 @@ function getPageContext() {
 // for artwork, so they keep the platform icon tile.
 function decorateVideos(videos, ctx) {
   const single = videos.length === 1;
+  // Wire capture picks up every Loom the tab requested, not just the one on
+  // screen, so a module page can list six rows all reading "Loom". The lesson's
+  // own video id tells us which row is the one the user is looking at; the rest
+  // get their id as a suffix so they are at least distinguishable from each
+  // other, instead of six identical buttons.
+  const onScreen = ctx?.sourceId
+    ? videos.find(v => v.sourceId && v.sourceId === ctx.sourceId)
+    : null;
   for (const v of videos) {
     const native = v.platform === 'skool' || v.platform === 'hls';
-    if (!v.title && ctx?.title && (native || single)) v.title = ctx.title;
+    if (!v.title && ctx?.title && (native || single || v === onScreen)) v.title = ctx.title;
+    if (!v.title && v.sourceId && videos.length > 1) {
+      v.label = `${v.label} · ${String(v.sourceId).slice(0, 8)}`;
+    }
+    if (v === onScreen) v.onScreen = true;
     if (v.thumb) continue;
     if (native && ctx?.frame) v.thumb = ctx.frame;
     else if (v.platform === 'youtube' && v.sourceId) v.thumb = `https://i.ytimg.com/vi/${v.sourceId}/hqdefault.jpg`;
@@ -208,14 +220,19 @@ function renderVideoList() {
   hintEl.textContent = chrome.i18n.getMessage('hintPickVideo');
 
   box.innerHTML = '';
-  currentVideos.forEach((v, i) => {
+  // Put the lesson on screen first — with six candidates, ordering is half the
+  // answer to "which one is mine?".
+  const ordered = [...currentVideos].sort((a, b) => (b.onScreen ? 1 : 0) - (a.onScreen ? 1 : 0));
+  ordered.forEach((v, i) => {
     const row = document.createElement('button');
-    row.className = 'video-row';
+    row.className = v.onScreen ? 'video-row video-row--onscreen' : 'video-row';
     const icon = PLATFORM_ICON[v.platform] || '🎞️';
     row.innerHTML =
       `<span class="video-row__thumb">${icon}</span>` +
       `<span class="video-row__meta"><span class="video-row__title">${escapeHtml(v.title || chrome.i18n.getMessage('videoDefaultTitle', [String(i + 1)]))}</span>` +
-      `<span class="video-row__platform">${escapeHtml(v.label || v.platform)}</span></span>` +
+      `<span class="video-row__platform">${escapeHtml(v.label || v.platform)}` +
+      (v.onScreen ? ` <span class="video-row__badge">${escapeHtml(chrome.i18n.getMessage('videoOnThisPage'))}</span>` : '') +
+      `</span></span>` +
       `<span class="video-row__go">›</span>`;
     if (v.thumb) attachThumb(row.querySelector('.video-row__thumb'), v.thumb);
     row.addEventListener('click', () => openQuality(v));

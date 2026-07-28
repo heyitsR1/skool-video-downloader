@@ -293,6 +293,22 @@
   }, 800);
 
   // ── Page context for the popup (title + preview frame) ────────────────────
+  // Which video the on-screen lesson actually is. Wire capture grabs every Loom
+  // master the tab requests — Skool preloads siblings, so one page view can
+  // stack six identically-labelled "Loom" rows with no way to tell them apart.
+  // The lesson's own videoLink carries the id, and a wire-captured Loom master
+  // is a luna.loom.com/id/<same id>/rev/… URL, so the two can be matched up and
+  // the right row named after the lesson.
+  function currentLessonSourceId() {
+    const nd = document.getElementById('__NEXT_DATA__');
+    const md = new URLSearchParams(location.search).get('md');
+    if (!nd?.textContent || !md) return null;
+    const hit = (nextDataLessons(nd.textContent) || []).find(l => l.id === md);
+    if (!hit?.videoLink) return null;
+    const v = classifyLink(hit.videoLink, 'json-md');
+    return v?.sourceId || null;
+  }
+
   function currentLessonTitle() {
     const nd = document.getElementById('__NEXT_DATA__');
     const md = new URLSearchParams(location.search).get('md');
@@ -324,7 +340,7 @@
   chrome.runtime.onMessage.addListener((msg, _s, respond) => {
     if (msg.type === 'RESCAN') { seen.clear(); reportedHash.clear(); scan(); respond?.({ ok: true }); }
     if (msg.type === 'GET_PAGE_TITLE') respond?.({ title: document.title.replace(/\s*[-|]\s*Skool.*$/i, '').trim() });
-    if (msg.type === 'GET_PAGE_CONTEXT') respond?.({ title: currentLessonTitle(), frame: grabVideoFrame() });
+    if (msg.type === 'GET_PAGE_CONTEXT') respond?.({ title: currentLessonTitle(), sourceId: currentLessonSourceId(), frame: grabVideoFrame() });
     return true;
   });
 })();

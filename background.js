@@ -213,6 +213,13 @@ try {
           url,
           headers,
           jsonPlaylist: isVimeoJson || undefined,
+          // A Loom master is luna.loom.com/id/<session id>/rev/…, and that id is
+          // the same one the lesson's videoLink carries. Carrying it lets the
+          // popup name the row for the lesson on screen instead of showing a
+          // stack of identical "Loom" entries.
+          sourceId: platform === 'loom'
+            ? (url.match(/\/id\/([0-9a-f]{20,})/i) || [])[1] || null
+            : null,
           title: null
         }));
       } catch {}
@@ -802,6 +809,13 @@ async function downloadDirect(url, { onProgress, isCancelled, mimeType }) {
     received += value.length;
     onProgress?.(received, total || received, received);
   }
+  // A stream that ends early is not a success. content-length was previously
+  // read only to drive the progress bar, so a transfer that died at 2% produced
+  // a truncated file, reported no error, and the user discovered it in their
+  // video player. If the server told us how many bytes to expect, hold it to it.
+  if (total > 0 && received < total) {
+    throw new Error(`Download stopped early — got ${formatGB(received)} of ${formatGB(total)}. Try again.`);
+  }
   return new Blob(chunks, { type: mimeType || 'video/mp4' });
 }
 
@@ -908,8 +922,29 @@ function formatGB(bytes) {
   return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
 }
 
+// ── Refuse to save something that isn't a video ───────────────────────────────
+//
+// The pipeline had no size check anywhere, so any 200 response became a file:
+// a CDN error page, a placeholder, a resolver handing back a URL with no media
+// behind it. Those saved without complaint and the user found out when their
+// player showed a 00:00:00 track with no picture — which is exactly what was
+// reported. Nothing legitimate lands under this floor: the smallest real
+// audio-only lesson is comfortably above it, so a file below it is a failure
+// wearing a success's clothes.
+const MIN_USABLE_BYTES = 64 * 1024;
+function assertUsableVideo(blob) {
+  if (blob.size >= MIN_USABLE_BYTES) return;
+  svdLog('save', `refused empty file (${blob.size} bytes)`);
+  throw new Error(
+    `The download came back empty (${blob.size} bytes), so there is no video to save. `
+    + 'This usually means the lesson’s video could not be reached directly. '
+    + 'Press play on the video in Skool, let it run for a few seconds, then download it again.'
+  );
+}
+
 // ── Blob saving via offscreen anchor ──────────────────────────────────────────
 function saveBlob(blob, filename) {
+  assertUsableVideo(blob);
   return withOffscreen(async () => {
     const key = `https://skool-merge.local/save/${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const cache = await putBlobs([[key, blob]]);
@@ -917,7 +952,7 @@ function saveBlob(blob, filename) {
       await ensureOffscreenDocument();
       const result = await sendToOffscreen({ type: 'CREATE_BLOB_URL', key });
       if (!result?.success) throw new Error(result?.error || 'Failed to prepare file');
-      const downloadId = await saveViaOffscreenAnchor(filename);
+      const downloadId = await saveViaOffscreenAnchor(filename, blob.size);
       const { state, error } = await waitForDownloadEnd(downloadId);
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
     } finally {
@@ -941,7 +976,7 @@ function saveBlob(blob, filename) {
 const SAVE_START_TIMEOUT_MS = 90000;
 const SAVE_START_POLL_MS = 5000;
 
-function saveViaOffscreenAnchor(filename) {
+function saveViaOffscreenAnchor(filename, size) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     let done = false;
@@ -954,7 +989,11 @@ function saveViaOffscreenAnchor(filename) {
       fn(arg);
     };
     const succeed = (item, how) => {
-      svdLog('save', `download started after ${Date.now() - startedAt}ms via ${how} (id ${item.id})`);
+      // Size matters more than latency here: the two are proportional (Chrome
+      // copies the whole blob before creating the item), and a report that says
+      // how many bytes were handed over answers "the file won't open" outright.
+      svdLog('save', `download started after ${Date.now() - startedAt}ms via ${how}`
+        + ` (id ${item.id}${size ? `, ${formatGB(size)}` : ''})`);
       finish(resolve, item.id);
     };
     const onCreated = (item) => {
@@ -1096,6 +1135,7 @@ function withTimeout(promise, ms, message) {
 }
 
 function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving) {
+  assertUsableVideo(videoBlob);
   return withOffscreen(async () => {
     const jobId = Date.now();
     const videoKey = `https://skool-merge.local/${jobId}/video`;
@@ -1112,7 +1152,7 @@ function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving) {
       // The merge is done; handing a multi-GB blob to Chrome can take a while on
       // its own, so move the bar off "merging" rather than looking frozen at 82%.
       onSaving?.();
-      const downloadId = await saveViaOffscreenAnchor(`${filename}.mp4`);
+      const downloadId = await saveViaOffscreenAnchor(`${filename}.mp4`, result.size);
       const { state, error } = await waitForDownloadEnd(downloadId);
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
     } finally {

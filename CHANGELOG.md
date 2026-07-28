@@ -14,6 +14,35 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## v1.3.4 — 2026-07-28
+
+Stops the extension saving files that have no video in them, and makes a page
+full of Loom lessons possible to tell apart.
+
+A download that came back empty was saved anyway. Nothing in the pipeline ever
+checked how big the result was, so an unreachable video, a placeholder response
+or a stream that died early all produced a file that opened as a 00:00:00 track
+with no picture — and the extension reported success. Reported by a customer
+whose player showed exactly that.
+
+- A transfer that ends before the server's `content-length` is now a failure, not
+  a silent truncation. That length was previously read only to drive the progress
+  bar.
+- A result too small to be a video is refused with a message that says what to do
+  instead: press play on the lesson in Skool, then download. Going through the
+  player is what makes private Loom embeds resolvable.
+- ffmpeg exiting successfully having written an empty file is caught too.
+- The debug log now records how many bytes were handed to Chrome, so "the file
+  won't open" is answerable from a report instead of by inference.
+
+Wire capture picks up every Loom the page requests, not only the one on screen,
+so a module could list six rows all reading "Loom" with no way to choose.
+
+- The lesson on screen is now matched to its row by video id, labelled with the
+  lesson title, badged "on this page", and sorted to the top.
+- Any other untitled rows carry a short id suffix, so they are at least distinct
+  from one another.
+
 ## v1.3.3 — 2026-07-28
 
 Stops the extension telling people their disk is full when it isn't.

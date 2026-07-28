@@ -322,3 +322,19 @@ body {
   color: var(--muted); font-size: 15px; line-height: 1;
 }
 .update-banner__x:hover { color: var(--accent-strong); }
+
+/* The row matching the lesson on screen. Wire capture can list every Loom the
+   page requested, so this is the one visual cue saying "this is the one you're
+   looking at". */
+.video-row--onscreen { border-color: var(--accent, #6366f1); }
+.video-row__badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  vertical-align: middle;
+}
