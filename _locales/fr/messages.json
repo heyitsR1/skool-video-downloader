@@ -76,6 +76,7 @@
   "phaseQueued": { "message": "En attente" },
   "phaseCancelled": { "message": "Annulé" },
   "phaseMerging": { "message": "Fusion…" },
+  "phaseWaiting": { "message": "Débit limité — nouvelle tentative dans $TIME$ ($PCT$ % conservé)", "placeholders": { "time": { "content": "$1" }, "pct": { "content": "$2" } } },
   "phaseSaving": { "message": "Enregistrement…" },
   "phaseDone": { "message": "Terminé" },
   "phaseError": { "message": "Erreur" },

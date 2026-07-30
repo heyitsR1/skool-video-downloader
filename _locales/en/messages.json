@@ -76,6 +76,7 @@
   "phaseQueued": { "message": "Queued" },
   "phaseCancelled": { "message": "Cancelled" },
   "phaseMerging": { "message": "Merging…" },
+  "phaseWaiting": { "message": "Rate-limited — retrying in $TIME$ ($PCT$% kept)", "placeholders": { "time": { "content": "$1" }, "pct": { "content": "$2" } } },
   "phaseSaving": { "message": "Saving…" },
   "phaseDone": { "message": "Done" },
   "phaseError": { "message": "Error" },

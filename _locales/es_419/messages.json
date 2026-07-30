@@ -76,6 +76,7 @@
   "phaseQueued": { "message": "En cola" },
   "phaseCancelled": { "message": "Cancelada" },
   "phaseMerging": { "message": "Combinando…" },
+  "phaseWaiting": { "message": "Límite de velocidad — reintento en $TIME$ ($PCT$ % conservado)", "placeholders": { "time": { "content": "$1" }, "pct": { "content": "$2" } } },
   "phaseSaving": { "message": "Guardando…" },
   "phaseDone": { "message": "Listo" },
   "phaseError": { "message": "Error" },

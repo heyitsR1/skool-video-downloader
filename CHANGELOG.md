@@ -14,6 +14,39 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## v1.3.8 — 2026-07-30
+
+Downloads that hit Skool's rate limit now wait it out instead of dying, and the
+error you get when something does go wrong finally says something useful.
+
+Two problem reports showed a download failing at 8% and 12% with the message
+"Failed to fetch" — Chrome's own wording for a connection that dropped, which
+had been reaching the screen untranslated. The reports also showed what caused
+it: four large downloads back to back, then every request to Skool's video
+server crawling and then failing. That is rate-limiting. The extension already
+recognised rate-limiting when the server *answered* with an HTTP 429, but a
+server that copes by silently dropping connections instead produced a raw
+network error that bypassed all of that handling.
+
+- **A throttled download now pauses instead of failing.** When the connection
+  keeps dropping, the download holds everything it has already fetched and
+  retries after 1 minute, then 2, then 4. The queue shows a countdown and the
+  percentage it is holding. Previously the job ended and every downloaded
+  segment was discarded — in one of these reports, seven minutes of transfer
+  thrown away at 8%.
+- **Dropped connections get the same advice as HTTP 429**, in plain language,
+  instead of "Failed to fetch".
+- **Stalled connections are detected.** A request that connects and then
+  delivers nothing used to hang forever, freezing the whole batch behind it;
+  those are now given 45 seconds and retried.
+- **Much more patience for dropped connections.** They previously got five
+  attempts across about 8 seconds, which never outlasts a real throttle.
+- **Cancel works during all of the above.**
+- **Fix: expiry timestamps in problem reports now show the date.** Skool's video
+  links last 24 hours, but the log printed the time of day only, so a link
+  valid until tomorrow at 21:01 sat next to a 21:00 failure and looked like it
+  had just expired. This one cost real time during triage.
+
 ## v1.3.7 — 2026-07-28
 
 Checkout moves back to Freemius. Nothing else about the extension changes.

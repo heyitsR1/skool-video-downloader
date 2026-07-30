@@ -76,6 +76,7 @@
   "phaseQueued": { "message": "Na fila" },
   "phaseCancelled": { "message": "Cancelado" },
   "phaseMerging": { "message": "Combinando…" },
+  "phaseWaiting": { "message": "Limite de taxa — tentando de novo em $TIME$ ($PCT$% mantido)", "placeholders": { "time": { "content": "$1" }, "pct": { "content": "$2" } } },
   "phaseSaving": { "message": "Salvando…" },
   "phaseDone": { "message": "Concluído" },
   "phaseError": { "message": "Erro" },

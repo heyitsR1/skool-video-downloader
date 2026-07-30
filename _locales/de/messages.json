@@ -76,6 +76,7 @@
   "phaseQueued": { "message": "In Warteschlange" },
   "phaseCancelled": { "message": "Abgebrochen" },
   "phaseMerging": { "message": "Wird zusammengeführt…" },
+  "phaseWaiting": { "message": "Ratenbegrenzt – neuer Versuch in $TIME$ ($PCT$ % gesichert)", "placeholders": { "time": { "content": "$1" }, "pct": { "content": "$2" } } },
   "phaseSaving": { "message": "Wird gespeichert…" },
   "phaseDone": { "message": "Fertig" },
   "phaseError": { "message": "Fehler" },

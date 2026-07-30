@@ -62,11 +62,18 @@ function jwtExpFromUrl(url) {
 // what matters in a report is whether the token had already lapsed.
 // Accepts a Date or the ISO string form, since the expiry rides along on the
 // quality object through the popup and back (JSON, so Dates don't survive).
+//
+// The date is printed whenever the expiry is not today. Skool's Mux tokens last
+// 24 hours, so a time-of-day-only stamp put "exp 21:01Z" beside a 21:00 failure
+// and read as a token that died one minute before the download — when it in fact
+// had a full day left. The "(in Nm)" was always right; nobody reads it first.
 function describeExpiry(exp) {
   const d = exp instanceof Date ? exp : (exp ? new Date(exp) : null);
   if (!d || isNaN(d)) return null;
   const mins = Math.round((d - Date.now()) / 60000);
-  const when = d.toISOString().slice(11, 16) + 'Z';
+  const iso = d.toISOString();
+  const sameDay = iso.slice(0, 10) === new Date().toISOString().slice(0, 10);
+  const when = (sameDay ? iso.slice(11, 16) : iso.slice(0, 16).replace('T', ' ')) + 'Z';
   return `exp ${when} (${mins >= 0 ? `in ${mins}m` : `EXPIRED ${-mins}m ago`})`;
 }
 
@@ -667,38 +674,148 @@ function resolvePlaylistUrl(url, baseUrl, parentQuery) {
 // fatal: those mean expired signature or wrong URL, and retrying can't help.
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
-async function fetchWithRetry(url, { maxRetries = 4 } = {}) {
+// A throttled edge does not always answer 429. Often it accepts the connection
+// and then drops or starves it, which rejects fetch() with a bare TypeError
+// instead of returning a status — same cause, same fix, but it used to escape
+// the status-shaped handling entirely and reach the user as "Failed to fetch".
+//
+// Two separate budgets, because the two failures need different patience. A 429
+// is answered instantly and its Retry-After is usually seconds. A connection
+// reset is the edge refusing this IP for as long as the throttle lasts, so five
+// tries across 7.5s never stood a chance — it needs about a minute.
+const NET_MAX_RETRIES = 7;
+const NET_BACKOFF_CAP_MS = 16000;
+
+// Every attempt covers headers AND body under one abort signal. fetch() resolves
+// the moment headers arrive, so a timeout wrapped around fetch() alone sails
+// straight past the case that actually happens — a socket that connects, answers
+// 200, and then delivers nothing — and hangs forever in r.blob(). Since a batch
+// waits on its slowest member, one starved socket freezes ten. Reading the body
+// in here is what gives the timeout something to bite on.
+//
+// 45s is deliberately generous: a ~6s HLS segment is a few MB, which is a real
+// 30+ seconds on a genuinely slow line. This is a stall detector, not an SLA.
+const ATTEMPT_TIMEOUT_MS = 45000;
+
+// Marks the errors that must not be swallowed by the network-retry branch below
+// (they're thrown from inside the same try block). `throttle` further marks the
+// ones worth waiting out rather than failing on — see withThrottleCooldown.
+function fatal(message, { throttle = false } = {}) {
+  const e = new Error(message);
+  e.svdFatal = true;
+  if (throttle) e.svdThrottle = true;
+  return e;
+}
+
+// Returns the body, not the Response: reading it in here is what keeps it inside
+// the abort signal, and every caller wanted the body anyway. It also means the
+// status check happens once, here, instead of at five call sites.
+// isCancelled is checked between attempts because the network budget is now
+// nearly a minute: without it, pressing Cancel on a throttled download would sit
+// there backing off long after the user gave up.
+async function fetchWithRetry(url, { maxRetries = 4, read = 'blob', isCancelled } = {}) {
+  let netFailures = 0;
   for (let attempt = 0; ; attempt++) {
-    let r;
+    if (isCancelled?.()) throw fatal('Cancelled');
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ATTEMPT_TIMEOUT_MS);
     try {
-      r = await fetch(url);
+      const r = await fetch(url, { signal: ctl.signal });
+      if (!r.ok) {
+        if (attempt >= maxRetries || !RETRYABLE_STATUS.has(r.status)) {
+          // A retryable status that outlived the budget is a throttle that is
+          // answering, rather than one that is dropping connections. Same wait.
+          throw fatal(segmentFailureMessage(r.status), { throttle: RETRYABLE_STATUS.has(r.status) });
+        }
+        await backoff(attempt, parseFloat(r.headers.get('Retry-After')));
+        continue;
+      }
+      return read === 'text' ? await r.text() : await r.blob();
     } catch (e) {
-      // A dropped connection mid-download rejects rather than returning a
-      // response; it's just as transient as a 504, so give it the same budget.
-      if (attempt >= maxRetries) throw e;
-      await backoff(attempt);
-      continue;
+      if (e?.svdFatal) throw e;
+      // AbortError (our timeout) and TypeError (reset/refused/DNS) are the
+      // network family. Anything else is a bug in here and should surface.
+      if (e?.name !== 'AbortError' && e?.name !== 'TypeError') throw e;
+      if (++netFailures > NET_MAX_RETRIES) throw fatal(NETWORK_FAILURE_MESSAGE, { throttle: true });
+      await backoff(netFailures - 1, undefined, NET_BACKOFF_CAP_MS);
+    } finally {
+      clearTimeout(timer);
     }
-    if (r.ok || attempt >= maxRetries || !RETRYABLE_STATUS.has(r.status)) return r;
-    await backoff(attempt, parseFloat(r.headers.get('Retry-After')));
   }
 }
 
-function backoff(attempt, retryAfterSec) {
+function backoff(attempt, retryAfterSec, capMs = 8000) {
   const delay = Number.isFinite(retryAfterSec)
     ? retryAfterSec * 1000
-    : Math.min(500 * 2 ** attempt, 8000) + Math.random() * 300;
+    : Math.min(500 * 2 ** attempt, capMs) + Math.random() * 300;
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
-// Reaching here means fetchWithRetry already spent its whole backoff budget, so
-// a 429 isn't a blip — the CDN is throttling this IP hard, usually after several
+// fetchWithRetry's ~50s budget answers a blip. A throttle that outlasts it used
+// to end the job — and with it, everything already downloaded: seven minutes of
+// transfer discarded at 8%, in the reports that prompted this. Nothing about the
+// partial is unusable. The caller's blob array is a local that simply never
+// unwinds if we don't throw, so the cheapest resume is not to unwind: wait the
+// throttle out in place, then retry the same batch.
+//
+// Escalating waits, capped at three rounds — past ~13 minutes it isn't a burst
+// throttle any more and the user is better served by an error they can act on.
+const COOLDOWNS_MS = [60000, 120000, 240000];
+
+async function withThrottleCooldown(run, { isCancelled, onWait, onCooldown } = {}) {
+  for (let round = 0; ; round++) {
+    try {
+      return await run();
+    } catch (e) {
+      if (!e?.svdThrottle || round >= COOLDOWNS_MS.length) throw e;
+      onCooldown?.(COOLDOWNS_MS[round], round);
+      await cooldownSleep(COOLDOWNS_MS[round], { isCancelled, onWait });
+    }
+  }
+}
+
+// Ticks every second so Cancel stays responsive, but only reports every fifth so
+// the popup isn't repainted 240 times over a four-minute wait. A silent progress
+// bar sitting at 8% is indistinguishable from a hang, so the countdown is the
+// whole point: it says the download is still coming back.
+function cooldownSleep(ms, { isCancelled, onWait }) {
+  return new Promise((resolve, reject) => {
+    const until = Date.now() + ms;
+    const tick = () => {
+      if (isCancelled?.()) { clearInterval(timer); reject(new Error('Cancelled')); return; }
+      const left = Math.ceil((until - Date.now()) / 1000);
+      if (left <= 0) { clearInterval(timer); onWait?.(0); resolve(); return; }
+      if (left % 5 === 0 || left < 5) onWait?.(left);
+    };
+    const timer = setInterval(tick, 1000);
+    tick();
+  });
+}
+
+// The connection-level twin of the rate-limit message below. Chrome's own
+// wording for this is "Failed to fetch", which went into the popup, the queue
+// row and the problem report verbatim — accurate, and useless to everyone who
+// read it.
+//
+// Both messages are only ever seen after withThrottleCooldown has already waited
+// out three rounds, so neither may say "wait a few minutes and try again" as if
+// that hadn't been tried: by this point the extension has been waiting for about
+// thirteen. Saying so is also the honest signal that retrying now is pointless.
+const NETWORK_FAILURE_MESSAGE = 'Lost the connection to Skool\'s video server. The download waited and retried for about 13 minutes and it never recovered, so it has been stopped and the part already downloaded isn\'t kept. This is usually heavy rate-limiting after several downloads in a row — leave it a while longer before trying again, and check your internet connection if it keeps happening.';
+
+// The same failure reached from a path that has no cool-down behind it (a
+// progressive download, a Vimeo playlist read). It must not claim a wait that
+// never happened, so it gives the advice without the duration.
+const NETWORK_LOST_MESSAGE = 'Lost the connection to Skool\'s video server. This is usually rate-limiting after several downloads in a row — wait a few minutes and start the download again, and check your internet connection if it keeps happening.';
+
+// Reaching here means the retry budget AND the cool-downs are spent, so a 429
+// isn't a blip — the CDN is throttling this IP hard, usually after several
 // downloads back to back. "HTTP 429" told the user nothing actionable; waiting
 // is the actual fix, so say that. Expired signatures (403) are the other status
 // that shows up in reports and have their own fix: reload and press play again.
 function segmentFailureMessage(status) {
   if (status === 429 || status === 503) {
-    return 'Skool\'s video server is rate-limiting this connection. Wait a few minutes and start the download again — the part already downloaded isn\'t kept, so it will restart from the beginning.';
+    return 'Skool\'s video server is rate-limiting this connection. The download waited and retried for about 13 minutes and was still being refused, so it has been stopped and the part already downloaded isn\'t kept. Leave it a while longer before starting again.';
   }
   if (status === 403 || status === 401) {
     return 'The video link expired mid-download. Reload the lesson page, press play, and download again.';
@@ -706,19 +823,19 @@ function segmentFailureMessage(status) {
   return `Segment fetch failed: HTTP ${status}`;
 }
 
-async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType }) {
-  const res = await fetchWithRetry(playlistUrl);
-  if (!res.ok) throw new Error(segmentFailureMessage(res.status));
-  const text = await res.text();
+async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType, onWait, onCooldown }) {
+  const text = await withThrottleCooldown(
+    () => fetchWithRetry(playlistUrl, { read: 'text', isCancelled }),
+    { isCancelled, onWait, onCooldown });
   const baseUrl = playlistUrl.substring(0, playlistUrl.lastIndexOf('/') + 1);
   const parentQuery = (playlistUrl.split('?')[1] || '');
 
   const blobs = [];
   const mapMatch = text.match(/#EXT-X-MAP:URI="([^"]+)"/);
   if (mapMatch) {
-    const r = await fetchWithRetry(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery));
-    if (!r.ok) throw new Error(segmentFailureMessage(r.status));
-    blobs.push(await r.blob());
+    blobs.push(await withThrottleCooldown(
+      () => fetchWithRetry(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery), { read: 'blob', isCancelled }),
+      { isCancelled, onWait, onCooldown }));
   }
 
   const segments = [];
@@ -735,10 +852,9 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   for (let i = 0; i < segments.length; i += BATCH) {
     if (isCancelled?.()) throw new Error('Cancelled');
     const batch = segments.slice(i, i + BATCH);
-    const parts = await Promise.all(batch.map(u => fetchWithRetry(u).then(r => {
-      if (!r.ok) throw new Error(segmentFailureMessage(r.status));
-      return r.blob();
-    })));
+    const parts = await withThrottleCooldown(
+      () => Promise.all(batch.map(u => fetchWithRetry(u, { read: 'blob', isCancelled }))),
+      { isCancelled, onWait, onCooldown });
     blobs.push(...parts);
     bytes += parts.reduce((n, b) => n + b.size, 0);
     onProgress?.(Math.min(i + batch.length, segments.length), segments.length, bytes);
@@ -752,15 +868,15 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
 // a fresh read is both smaller and more likely to still be valid. The init
 // segment arrives base64-inline (no request of its own) and must lead, since it
 // carries the fMP4 moov the concatenated media segments are useless without.
-async function downloadVimeoTrack(playlistUrl, kind, trackId, { onProgress, isCancelled }) {
+async function downloadVimeoTrack(playlistUrl, kind, trackId, { onProgress, isCancelled, onWait, onCooldown }) {
   const pl = await fetchVimeoPlaylist(playlistUrl);
   const track = vimeoTrackSegments(pl, playlistUrl, kind, trackId);
   const blobs = [];
   if (track.init) blobs.push(base64ToBlob(track.init));
   else if (track.initUrl) {
-    const r = await fetchWithRetry(track.initUrl);
-    if (!r.ok) throw new Error(segmentFailureMessage(r.status));
-    blobs.push(await r.blob());
+    blobs.push(await withThrottleCooldown(
+      () => fetchWithRetry(track.initUrl, { read: 'blob', isCancelled }),
+      { isCancelled, onWait, onCooldown }));
   }
   if (!track.urls.length) throw new Error('No segments in Vimeo playlist');
 
@@ -771,10 +887,9 @@ async function downloadVimeoTrack(playlistUrl, kind, trackId, { onProgress, isCa
   for (let i = 0; i < track.urls.length; i += BATCH) {
     if (isCancelled?.()) throw new Error('Cancelled');
     const batch = track.urls.slice(i, i + BATCH);
-    const parts = await Promise.all(batch.map(u => fetchWithRetry(u).then(r => {
-      if (!r.ok) throw new Error(segmentFailureMessage(r.status));
-      return r.blob();
-    })));
+    const parts = await withThrottleCooldown(
+      () => Promise.all(batch.map(u => fetchWithRetry(u, { read: 'blob', isCancelled }))),
+      { isCancelled, onWait, onCooldown });
     blobs.push(...parts);
     bytes += parts.reduce((n, b) => n + b.size, 0);
     onProgress?.(Math.min(i + batch.length, track.urls.length), track.urls.length, bytes);
@@ -1239,6 +1354,23 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
     updateJob(jobId, { percent: meta.percent, phase: meta.phase, speed: meta.speed });
   };
 
+  // Waiting out a throttle. The percent deliberately does not move — it is the
+  // proof that the partial download is still held, which is the entire reason
+  // this state exists instead of an error.
+  const onWait = (secondsLeft) => {
+    if (secondsLeft > 0) {
+      meta.phase = 'waiting'; meta.waitSeconds = secondsLeft; meta.speed = '';
+      updateJob(jobId, { percent: meta.percent, phase: 'waiting', waitSeconds: secondsLeft, speed: '' });
+    } else {
+      meta.phase = 'downloading'; meta.waitSeconds = 0;
+      lastBytes = 0; lastTs = Date.now();   // don't bill the wait as zero throughput
+      updateJob(jobId, { percent: meta.percent, phase: 'downloading', waitSeconds: 0 });
+    }
+  };
+  const onCooldown = (ms, round) => svdLog('download',
+    `throttled at ${meta.percent}% — holding progress, retrying in ${Math.round(ms / 1000)}s (round ${round + 1}/${COOLDOWNS_MS.length})`);
+  const netOpts = { onWait, onCooldown };
+
   let ruleId = null;
   try {
     updateJob(jobId, { phase: 'downloading' });
@@ -1272,7 +1404,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
           : 'No separate video track for this quality.');
       }
       const blob = await fetchTrack({
-        isCancelled, mimeType: mode === 'audio' ? 'audio/mp4' : 'video/mp4',
+        isCancelled, ...netOpts, mimeType: mode === 'audio' ? 'audio/mp4' : 'video/mp4',
         onProgress: (d, t, b) => setPct(t ? (d / t) * 95 : 50, 'downloading', b)
       });
       if (isCancelled()) throw new Error('Cancelled');
@@ -1289,7 +1421,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
 
     } else if (quality.kind === 'hls') {
       const videoBlob = await downloadRendition(quality.videoUrl, {
-        isCancelled, mimeType: 'video/mp4',
+        isCancelled, ...netOpts, mimeType: 'video/mp4',
         onProgress: (d, t, b) => setPct(quality.audioUrl ? (d / t) * 55 : (d / t) * 92, 'downloading', b)
       });
       if (!quality.audioUrl) {
@@ -1297,7 +1429,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         await saveBlob(videoBlob, `${filename}.mp4`);
       } else {
         const audioBlob = await downloadRendition(quality.audioUrl, {
-          isCancelled, mimeType: 'audio/mp4',
+          isCancelled, ...netOpts, mimeType: 'audio/mp4',
           onProgress: (d, t, b) => setPct(55 + (d / t) * 25, 'downloading', b)
         });
         if (isCancelled()) throw new Error('Cancelled');
@@ -1307,7 +1439,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
 
     } else if (quality.kind === 'vimeo-json') {
       const videoBlob = await downloadVimeoTrack(quality.playlistUrl, 'video', quality.videoTrackId, {
-        isCancelled,
+        isCancelled, ...netOpts,
         onProgress: (d, t, b) => setPct(quality.audioTrackId ? (d / t) * 55 : (d / t) * 92, 'downloading', b)
       });
       if (!quality.audioTrackId) {
@@ -1315,7 +1447,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         await saveBlob(videoBlob, `${filename}.mp4`);
       } else {
         const audioBlob = await downloadVimeoTrack(quality.playlistUrl, 'audio', quality.audioTrackId, {
-          isCancelled,
+          isCancelled, ...netOpts,
           onProgress: (d, t, b) => setPct(55 + (d / t) * 25, 'downloading', b)
         });
         if (isCancelled()) throw new Error('Cancelled');
@@ -1349,13 +1481,19 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       recordFinished({ ...meta, phase: 'cancelled' }, 'cancelled');
       broadcast({ type: 'QUEUE_CANCELLED', jobId });
     } else {
-      meta.phase = 'error'; meta.error = e.message;
+      // Not every fetch in a job runs through fetchWithRetry — progressive
+      // downloads and playlist reads call fetch() directly — so translate the
+      // raw browser wording here too rather than leaving one path that can still
+      // put "Failed to fetch" in front of a user. The original is kept in the
+      // log line: support needs to know which of the two produced it.
+      const raw = e.name === 'TypeError' || e.name === 'AbortError' ? e.message : null;
+      meta.phase = 'error'; meta.error = raw ? NETWORK_LOST_MESSAGE : e.message;
       const expiry = describeExpiry(quality.tokenExp);
-      svdLog('download', `${quality.platform || 'video'} "${String(filename).slice(0, 60)}": ${e.message}`
+      svdLog('download', `${quality.platform || 'video'} "${String(filename).slice(0, 60)}": ${raw ? `network (${raw})` : e.message}`
         + ` @${meta.percent}%${expiry ? ` ${expiry}` : ''}`);
       recordFinished(meta, 'error');
-      updateJob(jobId, { phase: 'error', error: e.message });
-      broadcast({ type: 'QUEUE_ERROR', jobId, error: e.message });
+      updateJob(jobId, { phase: 'error', error: meta.error });
+      broadcast({ type: 'QUEUE_ERROR', jobId, error: meta.error });
     }
   } finally {
     if (ruleId != null) await removeHeaderRules(ruleId);

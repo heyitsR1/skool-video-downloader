@@ -496,6 +496,10 @@ function phaseLabel(item) {
   if (item.state === 'queued') return chrome.i18n.getMessage('phaseQueued');
   if (item.state === 'cancelled') return chrome.i18n.getMessage('phaseCancelled');
   switch (item.phase) {
+    // The percent is kept in the label: this state exists to show that the
+    // partial download is still held, not thrown away, while a throttle passes.
+    case 'waiting': return chrome.i18n.getMessage('phaseWaiting',
+      [formatWait(item.waitSeconds), String(item.percent || 0)]);
     case 'merging': return chrome.i18n.getMessage('phaseMerging');
     case 'saving': return chrome.i18n.getMessage('phaseSaving');
     case 'done': return chrome.i18n.getMessage('phaseDone');
@@ -503,6 +507,12 @@ function phaseLabel(item) {
     case 'starting': return chrome.i18n.getMessage('phaseStarting');
     default: return `${item.percent || 0}%`;
   }
+}
+
+// m:ss, or plain seconds under a minute.
+function formatWait(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0));
+  return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${s}s`;
 }
 
 function updateRow(jobId, patch) {
