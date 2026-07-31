@@ -14,6 +14,48 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## Server-side — 2026-07-31
+
+**Licences stopped silently running out of activations.** This is a change to
+the `skool-dl-license` Worker only. There is no new extension version and
+nothing to install — every already-installed copy, of every version, is fixed
+the moment the Worker is deployed.
+
+If your key had stopped working, or the extension had dropped back to the free
+tier on its own, this was why.
+
+**What was happening.** Freemius accepts a device identifier (`uid`) when a
+licence is activated and does not store it — verified against their live API:
+activating twice with a byte-identical uid produces two separate installs, and
+reading the install back reports `uid: null`. Nothing was idempotent, so *every*
+activation attempt permanently consumed one of the licence's activation slots.
+
+The extension revalidates a licence once every 24 hours, and that check was
+routed through the same activation endpoint. So each customer quietly spent one
+activation slot **per day**, forever, just by leaving the extension installed.
+Against the old five-slot quota, a paying customer locked themselves out within
+about four days of ordinary use — holding a licence that was perfectly valid.
+Clicking "Activate license" more than once did the same thing, faster.
+
+- **The daily revalidation no longer consumes anything.** It is now a read: it
+  asks whether the licence is cancelled or expired and nothing else. It cannot
+  create installs, because it no longer calls the activation endpoint at all. A
+  regression test fails the build if it ever does again.
+- **Re-activating on a device that already has the licence is free.** Installs
+  now carry a device tag the API actually persists, so a repeat activation finds
+  the existing install instead of minting another. Clicking Activate five times
+  costs one slot instead of five.
+- **A cancelled or expired licence is still refused.** Skipping the activation
+  call must not skip the refusal, so entitlement is checked explicitly before
+  any device is let through on a re-activation.
+- **A licence lookup that fails is never treated as a revocation.** An
+  unreachable provider, or a search that returns nothing, keeps the customer
+  paid — the same guarantee the Dodo path has always had.
+
+Fixed slot accounting is not retroactive: slots consumed by the daily leak
+before this deploy are still held by junk installs and have to be released
+per-licence. Quotas were raised in the meantime.
+
 ## v1.3.8 — 2026-07-30
 
 Downloads that hit Skool's rate limit now wait it out instead of dying, and the
