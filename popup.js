@@ -3,17 +3,6 @@
 // resolution → enqueue. A live download-manager panel renders queue state from
 // background QUEUE_* broadcasts (progress, speed, cancel).
 
-// ── Which processor sells ─────────────────────────────────────────────────────
-// 'freemius' | 'dodo'.
-//
-// 2026-07-28: back to 'freemius'. Dodo Payments' compliance team ruled this
-// product outside their Merchant Acceptance Policy and asked us to stop selling
-// through them. This flag steers ONLY the checkout links. Activation is
-// untouched: the licensing Worker accepts keys from BOTH processors and always
-// will, so every customer from either era keeps their entitlement. Flip back to
-// 'dodo' if that decision is reversed — nothing else has to change.
-const PROCESSOR = 'freemius';
-
 // Freemius checkout — Skool Video Downloader (product 33457, plan 54961,
 // pricing 72637). MV3 popup CSP forbids loading Freemius's checkout.min.js, so
 // we open the hosted popup-mode checkout URL directly in a tab. The /plan/
@@ -27,28 +16,12 @@ const FS_PRODUCT_ID = 33457;
 const FS_PLAN_ID = 54961;
 const FS_CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PLAN_ID}/`;
 
-// Dodo Payments — dormant while PROCESSOR is 'freemius'. Two separate products
-// rather than one plan with cycles (Freemius's shape), so each price has its own
-// hosted checkout URL. redirect_url lands the buyer on our welcome page, which
-// reads ?license_key= out of the URL.
-const DODO_CHECKOUT = 'https://checkout.dodopayments.com/buy';
-const DODO_MONTHLY_PRODUCT = 'pdt_0Njs5UbIatGMhdS1azn5x';
-const DODO_LIFETIME_PRODUCT = 'pdt_0Njs5dir2LdaL8u9azm7j';
 // Short, canonical form — the site 308s the long /skool-video-downloader/... path
 // here anyway, and a purchase redirect shouldn't need an extra hop.
 const WELCOME_URL = 'https://skoolvideodownload.com/welcome';
 
-function dodoCheckoutUrl(productId) {
-  const params = new URLSearchParams({ quantity: '1', redirect_url: WELCOME_URL });
-  return `${DODO_CHECKOUT}/${productId}?${params.toString()}`;
-}
-
-const CHECKOUT_MONTHLY = PROCESSOR === 'dodo'
-  ? dodoCheckoutUrl(DODO_MONTHLY_PRODUCT)
-  : `${FS_CHECKOUT}?billing_cycle=monthly`;
-const CHECKOUT_LIFETIME = PROCESSOR === 'dodo'
-  ? dodoCheckoutUrl(DODO_LIFETIME_PRODUCT)
-  : `${FS_CHECKOUT}?billing_cycle=lifetime`;
+const CHECKOUT_MONTHLY = `${FS_CHECKOUT}?billing_cycle=monthly`;
+const CHECKOUT_LIFETIME = `${FS_CHECKOUT}?billing_cycle=lifetime`;
 
 // Cancel page, offered when an automatic monthly cancellation after a lifetime
 // upgrade didn't go through.
@@ -593,8 +566,9 @@ function setupLicenseActivation() {
   const input = document.getElementById('license-input');
   const msgEl = document.getElementById('activate-msg');
   btn.addEventListener('click', async () => {
-    // Sent as typed: Dodo keys are case-sensitive. The Worker uppercases for
-    // the legacy Freemius attempt, which is the only path that needed it.
+    // Sent as typed. The Worker uppercases for Freemius (which is the only
+    // path that needs it) and lowercases to match a legacy grant, so neither
+    // depends on what the customer's clipboard did to the casing.
     const key = input.value.trim();
     if (!key) return;
     btn.disabled = true; btn.textContent = chrome.i18n.getMessage('verifyingBtn');

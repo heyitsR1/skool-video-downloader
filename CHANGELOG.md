@@ -14,6 +14,31 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.4.0 — 2026-08-01
+
+### Removed
+- **Dodo Payments.** Dodo's compliance team ruled this product outside their
+  Merchant Acceptance Policy on 2026-07-27 and terminated every subscription
+  they had sold for it. The whole integration is gone: the two-processor
+  activation dispatch, the provider-shaped revalidation, the checkout links and
+  the `DODO_MODE` switch. Freemius is the only processor again, as it was before
+  v1.3.0.
+
+### Changed
+- The nine subscriptions sold in the Dodo window (2026-07-26 → 2026-07-30) are
+  carried by dated grants in the licensing Worker that run to one month past
+  each purchase — the month those customers actually paid for. They keep working
+  until then and lapse normally afterwards, rather than being cut off the moment
+  the Dodo code was deleted.
+- A licence key too long to be a Freemius key is now answered from those grants
+  instead of being sent to a processor that no longer exists.
+
+### Fixed
+- Buying the lifetime plan while on a monthly subscription now cancels the
+  monthly one whichever processor issued it. The check required the new licence
+  to have come from Dodo, so removing Dodo would have made it dead code and
+  quietly left upgraded customers paying twice.
+
 ## v1.3.9 — 2026-08-01
 
 A Vimeo lesson is one row again, and a cancelled save says it was cancelled.
