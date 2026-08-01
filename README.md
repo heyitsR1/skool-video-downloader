@@ -62,6 +62,7 @@ git commit -am "vX.Y.Z: ..." && git push
 gh release create vX.Y.Z dist/skool-video-downloader-full-vX.Y.Z.zip \
   --title "vX.Y.Z — full (sideload) build" --notes-file <(...)   # from CHANGELOG.md
 node scripts/publish-version.mjs          # ← tells existing users an update exists
+node ../whop-downloader/scripts/release-doctor.mjs   # ← confirms you finished
 ```
 
 `CHANGELOG.md` is the single place a release is described in customer-facing
@@ -80,15 +81,33 @@ the /updates page both read their version from the Worker's KV config, so
 skipping it means every sideload user is told they are current no matter how
 many releases have shipped.
 
-The Chrome Web Store zip is a separate manual upload to the dashboard. Once
-that listing is actually **live** (not just submitted), publish its version too:
+The Chrome Web Store zip is a separate manual upload to the dashboard. **The
+store version now looks after itself** — an hourly cron in the `whop-dl-license`
+Worker reads the version Chrome's own update endpoint reports for our listing and
+writes it to `latestCws`, so the config catches up within an hour of the listing
+going live and never before it. That is the one release step nobody could do at
+release time, and it had rotted twice: 1.1.0 for eight releases, then 1.3.2 for
+six more.
+
+`--cws` survives as a manual override for when you need the number now rather
+than within the hour:
 
 ```bash
 node scripts/publish-version.mjs --cws X.Y.Z
 ```
 
 Never run `--cws` ahead of the store — it banners users about a build they
-cannot install yet.
+cannot install yet. The cron cannot make that mistake; you can.
+
+To see every version at once — manifest, git, GitHub release, store, and KV —
+across all our extensions:
+
+```bash
+node ../whop-downloader/scripts/release-doctor.mjs
+```
+
+It exits non-zero on real drift, and is the fastest way to answer "did I
+actually finish that release?"
 
 ## Support
 
