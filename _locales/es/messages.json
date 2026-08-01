@@ -83,7 +83,7 @@
   "phaseStarting": { "message": "Iniciando…" },
 
   "licenseLabel": { "message": "¿Tienes una clave de licencia?" },
-  "licensePlaceholder": { "message": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" },
+  "licensePlaceholder": { "message": "sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx" },
   "activateBtn": { "message": "Activar licencia" },
   "verifyingBtn": { "message": "Verificando…" },
   "licenseActivated": { "message": "¡Licencia activada!" },

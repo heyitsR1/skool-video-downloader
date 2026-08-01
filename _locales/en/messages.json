@@ -84,7 +84,7 @@
 
   "licenseLabel": { "message": "Have a license key?" },
   "licenseLabelUpgrade": { "message": "Bought lifetime? Activate your new key" },
-  "licensePlaceholder": { "message": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" },
+  "licensePlaceholder": { "message": "sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx" },
   "activateBtn": { "message": "Activate license" },
   "verifyingBtn": { "message": "Verifying…" },
   "licenseActivated": { "message": "License activated!" },

@@ -38,11 +38,25 @@ sideload build (this one) and the Chrome Web Store build (YouTube stripped):
 node scripts/build.mjs   # → dist/*.zip
 ```
 
+### Tests
+
+```bash
+node scripts/background-smoke.mjs   # registry merge, Vimeo capture link, error wording
+node scripts/vimeo-smoke.mjs        # both Vimeo resolution paths (hits vimeo.com)
+node scripts/yt-smoke.mjs           # YouTube handoff (full build only)
+cd worker && npm test               # licence activation ordering
+```
+
+They read the shipping sources directly rather than importing a build, so a
+renamed function fails them loudly instead of silently testing nothing.
+
 ### Releasing
 
 ```bash
 # 1. bump "version" in manifest.json
 # 2. add the version's entry at the top of CHANGELOG.md
+# 3. add a row to docs/BUG-LOG.md for anything customer-visible this fixes
+node scripts/background-smoke.mjs && node scripts/vimeo-smoke.mjs
 node scripts/build.mjs
 git commit -am "vX.Y.Z: ..." && git push
 gh release create vX.Y.Z dist/skool-video-downloader-full-vX.Y.Z.zip \
@@ -54,6 +68,12 @@ node scripts/publish-version.mjs          # ← tells existing users an update e
 words; the GitHub release notes are written from it, not the reverse. Write it
 before tagging — reconstructing it later from commit messages loses the "what
 this meant for the user" half, which is the part support actually needs.
+
+If the release fixes something a customer could hit, add its row to
+[`docs/BUG-LOG.md`](docs/BUG-LOG.md) at the same time — the error string, the
+cause, and the version that fixed it. That file is what turns an incoming
+problem report into "already fixed in vX.Y.Z, update" in ten seconds instead of
+a re-investigation. Most reports are stale builds.
 
 The `publish-version.mjs` step is not optional. The popup's update banner and
 the /updates page both read their version from the Worker's KV config, so

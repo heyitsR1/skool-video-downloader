@@ -14,6 +14,55 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## v1.3.9 — 2026-08-01
+
+A Vimeo lesson is one row again, and a cancelled save says it was cancelled.
+
+**The Vimeo entry that works is the one you're offered.** A played Vimeo lesson
+was listed twice: once found in the page, once captured from the player. Only
+the captured one can download a video whose share link Skool's embed builder
+dropped — and the other one was the entry wearing the lesson title, the "on this
+page" badge and the top of the list, because those are matched by a video id
+only it carries. So the natural thing to click was the entry that could only
+answer 403, and the error told you to press play and reopen the menu, which is
+exactly what had already produced the working entry underneath it.
+
+The two are now recognised as the same video — the player's own frame is what
+ties the captured stream to the embed it came from — and merged into a single
+row that downloads through the captured stream. Where that link can't be made,
+a Vimeo entry that fails now falls back to the captured stream by itself rather
+than handing you an error; if the page holds several, the message names the
+entry to use instead of repeating advice you've already followed.
+
+**Save failures name the real reason.** Every failed hand-off to Chrome reported
+that a download manager was probably intercepting downloads — including the one
+case that has nothing to do with one. Saves go through Chrome's own download
+list, so if you have "Ask where to save each file" turned on and close that
+window, the save is cancelled and you were sent hunting for an IDM install you
+don't have. A cancelled save now says so and points at the setting; no space,
+no write permission, antivirus blocks and a too-long filename each say what they
+are. The raw reason from Chrome stays attached for support.
+
+**Problem reports say which build they came from.** Reports now carry `full` or
+`cws` and, when the copy is out of date, the version it should be on. Nearly
+every report we receive turns out to be a build from weeks ago — the Chrome Web
+Store copy updates itself, the hand-installed one does not — and there was no
+way to tell the two apart, or to tell a customer who never saw an update banner
+from one who ignored it.
+
+**Also:** the update check now knows the Chrome Web Store is on 1.3.8. It had
+been left at 1.3.2 since the store listing went live, so store customers were
+told they were current while six releases of fixes sat unshipped to them.
+
+**Also:** the licence box shows the shape of a key you actually have. Its
+example was a hyphenated UUID left over from the six weeks this extension sold
+through Dodo Payments — every key we issue now looks like `sk_…`, so the hint
+was quietly telling customers their real key was the wrong one.
+
+New in the repo: [`docs/BUG-LOG.md`](docs/BUG-LOG.md) indexes every error
+message this extension has been reported for against the version that fixed it,
+and `scripts/background-smoke.mjs` pins the four behaviours above.
+
 ## Server-side — 2026-07-31
 
 **Licences stopped silently running out of activations.** This is a change to

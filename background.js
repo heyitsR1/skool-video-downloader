@@ -172,6 +172,88 @@ function listVideos(tabId) {
   return t ? [...t.videos.values()].sort((a, b) => a.ts - b.ts) : [];
 }
 
+// ── Vimeo: linking a captured stream back to the embed it came from ──────────
+// A played Vimeo lesson is seen twice — the page scan finds the numeric video
+// id in the embed, the wire capture finds a DASH playlist signed for a clip
+// uuid — and nothing in either sighting names the other. That split listed one
+// video as two rows, and the row that CANNOT resolve (no share hash: Skool's
+// embed builder drops it) is the one holding the lesson title, the "on this
+// page" badge and the top of the list, because those are keyed off the numeric
+// id only the page scan has. Customers clicked it, got a 403, and were told to
+// press play — which is what produced the working row sitting underneath.
+//
+// The link is the frame. The player iframe's own URL carries the numeric id,
+// and every request the player makes afterwards — the playlist included —
+// reports that frame's id. Remember one for the other and the capture can be
+// filed under the same key as the page scan, which merges them into one row
+// that resolves through the captured stream.
+//
+// Mirrored to storage.session for the same reason the registry is: the worker
+// is routinely evicted between a lesson loading and the user pressing play, and
+// a forgotten link splits the rows again.
+const vimeoFrames = new Map();  // `${tabId}:${frameId}` -> numeric video id
+const vimeoClips = new Map();   // playlist clip uuid    -> numeric video id
+const VIMEO_LINK_MAX = 200;     // bounded: a long session must not grow forever
+
+const vimeoLinksReady = (async () => {
+  try {
+    const { vimeoLinks } = await chrome.storage.session.get('vimeoLinks');
+    for (const [k, v] of Object.entries(vimeoLinks?.frames || {})) vimeoFrames.set(k, v);
+    for (const [k, v] of Object.entries(vimeoLinks?.clips || {})) vimeoClips.set(k, v);
+  } catch { /* cold start with no links = the pre-linking two-row behaviour */ }
+})();
+
+function trimMap(m) {
+  while (m.size > VIMEO_LINK_MAX) m.delete(m.keys().next().value);
+}
+
+function persistVimeoLinks() {
+  trimMap(vimeoFrames);
+  trimMap(vimeoClips);
+  chrome.storage.session.set({
+    vimeoLinks: {
+      frames: Object.fromEntries(vimeoFrames),
+      clips: Object.fromEntries(vimeoClips)
+    }
+  }).catch(() => {});
+}
+
+function rememberVimeoFrame(tabId, frameId, videoId) {
+  const k = `${tabId}:${frameId}`;
+  if (vimeoFrames.get(k) === videoId) return;
+  vimeoFrames.set(k, videoId);
+  persistVimeoLinks();
+}
+
+// Once a clip uuid has been linked, remember it directly: a later replay whose
+// frame we never saw (extension reloaded, iframe already open) still merges.
+function vimeoIdForCapture(tabId, frameId, clipId) {
+  const byFrame = vimeoFrames.get(`${tabId}:${frameId}`);
+  if (byFrame) {
+    if (clipId && vimeoClips.get(clipId) !== byFrame) { vimeoClips.set(clipId, byFrame); persistVimeoLinks(); }
+    return byFrame;
+  }
+  return (clipId && vimeoClips.get(clipId)) || null;
+}
+
+// Captured Vimeo streams that could stand in for an embed row that won't
+// resolve. Only ever consulted after a failure: a hash-less embed still
+// resolves fine when the video is public, and that path needs no press-play.
+function vimeoStandIns(video, videos) {
+  if (video.platform !== 'vimeo' || video.jsonPlaylist) return [];
+  return videos.filter(v => v.platform === 'vimeo' && v.jsonPlaylist && v.url && v.key !== video.key);
+}
+
+function forgetTabVimeoFrames(tabId) {
+  let changed = false;
+  for (const k of vimeoFrames.keys()) {
+    if (k.startsWith(`${tabId}:`)) { vimeoFrames.delete(k); changed = true; }
+  }
+  // vimeoClips is deliberately kept: it is tab-independent and is what lets a
+  // replay after a page change still be linked.
+  if (changed) persistVimeoLinks();
+}
+
 // ── HLS capture (Skool-native Mux + any embedded HLS master) ──────────────────
 // Master playlists carry a query token; media/rendition playlists don't. We only
 // register masters so the picker shows real resolutions, not rendition fragments.
@@ -185,6 +267,18 @@ try {
         // manifest a Chrome capture can ever see for Vimeo, and the only route
         // to a Vimeo video whose share hash the page doesn't expose (Skool's
         // embed builder drops it), so it is captured alongside HLS masters.
+        // The player iframe loading is what tells us which numeric video id the
+        // stream this frame is about to request belongs to (see the link store
+        // above). Recorded before the manifest gate below, because a sub_frame
+        // navigation is neither an m3u8 nor a playlist.json.
+        if (details.type === 'sub_frame' && details.tabId >= 0 && details.frameId >= 0) {
+          const embed = /player\.vimeo\.com\/video\/(\d{6,})/.exec(url);
+          if (embed) {
+            const { tabId, frameId } = details;
+            vimeoLinksReady.then(() => rememberVimeoFrame(tabId, frameId, embed[1]));
+          }
+        }
+
         const isVimeoJson = /vimeocdn\.com\/.*\/playlist\.json/.test(url);
         if (!isVimeoJson) {
           if (!url.includes('.m3u8')) return;
@@ -226,22 +320,28 @@ try {
           ? (url.match(/\/id\/([0-9a-f]{20,})/i) || [])[1] || null
           : null;
 
-        registryReady.then(() => addVideo(details.tabId, {
-          key: isVimeoJson ? `vimeo-json:${clipId || url}` : (loomId ? `loom:${loomId}` : `hls:${url}`),
-          platform,
-          // A played Vimeo video lists twice — once from its embed, once from
-          // this capture — and the two can't be linked (the playlist URL carries
-          // a clip uuid, not the numeric video id). They can't be de-duped
-          // either: a hash-less embed entry still resolves fine when the video
-          // is public. So name this one for where it came from, and let the user
-          // tell them apart.
-          label: isVimeoJson ? 'Vimeo (from player)' : (PLATFORM_LABELS[platform] || 'Video'),
-          url,
-          headers,
-          jsonPlaylist: isVimeoJson || undefined,
-          sourceId: loomId,
-          title: null
-        }));
+        const { tabId, frameId } = details;
+        Promise.all([registryReady, vimeoLinksReady]).then(() => {
+          // A played Vimeo video is seen twice — once from its embed, once from
+          // this capture. When the frame it came from names the embed, file it
+          // under the page scan's own key so the two collapse into one row that
+          // resolves through this signed stream. Unlinked, it stays a separate
+          // row named for where it came from, which is still better than
+          // dropping it: for a hash-less private embed it is the only route.
+          const vimeoId = isVimeoJson ? vimeoIdForCapture(tabId, frameId, clipId) : null;
+          addVideo(tabId, {
+            key: isVimeoJson
+              ? (vimeoId ? `vimeo:${vimeoId}` : `vimeo-json:${clipId || url}`)
+              : (loomId ? `loom:${loomId}` : `hls:${url}`),
+            platform,
+            label: isVimeoJson ? 'Vimeo (from player)' : (PLATFORM_LABELS[platform] || 'Video'),
+            url,
+            headers,
+            jsonPlaylist: isVimeoJson || undefined,
+            sourceId: loomId || vimeoId,
+            title: null
+          });
+        });
       } catch {}
     },
     { urls: ['*://*.mux.com/*', '*://*.video.skool.com/*', '*://*.vimeo.com/*', '*://*.vimeocdn.com/*', '*://*.akamaized.net/*', '*://*.loom.com/*'] },
@@ -251,6 +351,7 @@ try {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabVideos.delete(tabId);
+  forgetTabVimeoFrames(tabId);
   persistRegistry();
   for (const [jobId, job] of activeJobs) {
     if (job.meta.tabId === tabId) { job.cancel(); activeJobs.delete(jobId); }
@@ -491,7 +592,11 @@ async function getVersionStatus() {
   if (!versionInfo || Date.now() - (versionCheckedAt || 0) > VERSION_CHECK_INTERVAL_MS) {
     for (const base of REPORT_API_BASES) {
       try {
-        const res = await fetch(`${base}/version?product=skool-video-downloader`, { cache: 'no-store' });
+        // Bounded: this is now on the problem-report path too, and a report
+        // submitted from a half-broken network must not hang on a check whose
+        // only job is to add a line of context.
+        const res = await fetch(`${base}/version?product=skool-video-downloader`,
+          { cache: 'no-store', signal: AbortSignal.timeout(4000) });
         if (!res.ok) continue;
         const info = await res.json();
         if (info && (info.latestCws || info.latestFull)) {
@@ -514,6 +619,16 @@ async function getVersionStatus() {
   };
 }
 
+// "1.3.9 full" when current, "1.1.6 full · latest 1.3.9" when behind. Stays
+// under the report worker's 32-character cap for this field.
+function describeVersion(status) {
+  const version = chrome.runtime.getManifest().version;
+  const channel = status?.channel || ((self.SVD_CONFIG && self.SVD_CONFIG.CHANNEL) === 'full' ? 'full' : 'cws');
+  return status?.updateAvailable
+    ? `${version} ${channel} · latest ${status.latest}`
+    : `${version} ${channel}`;
+}
+
 // ── Problem reports ───────────────────────────────────────────────────────────
 // Collect diagnostics (version, tier, currently detected videos with their
 // scanner source, recent debug log) and POST them to the shared reports Worker.
@@ -523,22 +638,32 @@ async function sendErrorReport(note, email, tabId) {
   await registryReady; // 'detected' must reflect the restored registry, not a cold Map
   await logChain;      // and the log must include the failure the user is reporting
   const { debugLog = [] } = await chrome.storage.local.get('debugLog');
-  const [license, installId] = await Promise.all([
+  const [license, installId, versionStatus] = await Promise.all([
     getLicenseStatus().catch(() => null),
     getInstallId().catch(() => undefined),
+    getVersionStatus().catch(() => null),
   ]);
   const detected = listVideos(tabId)
     // Vimeo entries note whether we hold the share hash: without it the embed
-    // path can only 403, so it's the difference between a bug and a private video.
+    // path can only 403, so it's the difference between a bug and a private
+    // video. `+stream` means the player's own stream is attached, which beats
+    // both — and says the capture↔embed link worked on this page.
     .map(v => `${v.platform}/${v.src || 'wire'}`
-      + (v.platform === 'vimeo' && !v.jsonPlaylist ? (v.hParam ? '+h' : '-h') : '')
+      + (v.platform !== 'vimeo' ? '' : v.jsonPlaylist ? '+stream' : v.hParam ? '+h' : '-h')
       + (v.title ? `:${v.title.slice(0, 40)}` : ''))
     .slice(0, 8);
   const payload = {
     product: 'skool-video-downloader',
     note: typeof note === 'string' ? note.slice(0, 500) : undefined,
     email: typeof email === 'string' && email.includes('@') ? email.slice(0, 120) : undefined,
-    version: chrome.runtime.getManifest().version,
+    // Which build, and whether it is current. The store build auto-updates and
+    // the GitHub one does not, so "is this already fixed, and did they have any
+    // way of knowing" is the first question every report raises — and most of
+    // them turn out to be stale sideloads. Folded into the version string
+    // rather than sent as its own field for the same reason the free-tier
+    // allowance is folded into `tier`: the report worker renders a fixed set of
+    // columns, and this needs no deploy to show up. (Capped at 32 there.)
+    version: describeVersion(versionStatus),
     ua: navigator.userAgent,
     // Free tier: fold the weekly-allowance state into the tier string so the
     // report worker shows it without needing a new column/redeploy.
@@ -1212,11 +1337,49 @@ function waitForDownloadEnd(downloadId, timeoutMs = 10 * 60 * 1000, maxExtension
   });
 }
 
+// By the time any of these fire the video is downloaded and merged; only the
+// hand-off to Chrome failed. Chrome tells us why in `error`, and every one of
+// these reasons used to be reported as "a download manager is intercepting
+// downloads" — including the reason that has nothing to do with one. The save
+// goes out as an anchor click from the offscreen document, so with Chrome's
+// "Ask where to save each file" setting on, a dismissed file picker lands here
+// as USER_CANCELED and the old message sent people hunting for an IDM install
+// they don't have.
 const DOWNLOAD_MANAGER_HINT =
   'Could not save the file. A download manager (e.g. Free Download Manager or IDM) may be intercepting downloads — turn off its browser integration, then try again.';
+const SAVE_FAILURE_HINTS = {
+  USER_CANCELED:
+    'The video downloaded and merged fine, but the save was cancelled. If a “Save as” window '
+    + 'appeared, closing or cancelling it does this — check Chrome ▸ Settings ▸ Downloads ▸ '
+    + '“Ask where to save each file”. A download manager extension (IDM, Free Download Manager) '
+    + 'can also cancel Chrome’s own downloads; turn off its browser integration.',
+  USER_SHUTDOWN:
+    'The save was interrupted by Chrome closing. The video downloaded and merged fine — '
+    + 'try again and leave the browser open until the file appears.',
+  FILE_ACCESS_DENIED:
+    'The video downloaded and merged fine, but Chrome was not allowed to write the file. '
+    + 'Check that your Downloads folder still exists and is writable, then try again.',
+  FILE_NO_SPACE:
+    'The video downloaded and merged fine, but there is not enough free disk space to save it.',
+  FILE_NAME_TOO_LONG:
+    'The video downloaded and merged fine, but the filename is too long for your system. '
+    + 'Shorten it in the download dialog, or rename the lesson, then try again.',
+  FILE_BLOCKED:
+    'The video downloaded and merged fine, but something blocked the save — usually antivirus '
+    + 'web protection or a Chrome policy. Turn that off for this download and try again.',
+  FILE_SECURITY_CHECK_FAILED:
+    'The video downloaded and merged fine, but a security check blocked the save — usually '
+    + 'antivirus web protection. Turn that off for this download and try again.',
+  FILE_VIRUS_INFECTED:
+    'The video downloaded and merged fine, but your antivirus refused the file. Exclude your '
+    + 'Downloads folder or the extension, then try again.',
+};
 function saveFailureMessage(state, error) {
   const detail = error || (state === 'timeout' ? 'timed out' : state);
-  return `${DOWNLOAD_MANAGER_HINT}${detail ? ` [${detail}]` : ''}`;
+  const hint = SAVE_FAILURE_HINTS[error] || DOWNLOAD_MANAGER_HINT;
+  // The raw reason stays in the message: it is what a problem report is read
+  // for, and it is how this table gets another row.
+  return `${hint}${detail ? ` [${detail}]` : ''}`;
 }
 
 // ── Offscreen merge of two blobs ──────────────────────────────────────────────
@@ -1571,27 +1734,54 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           await applyHeaderRules(ruleId, video.url, headers);
         }
 
-        try {
-          const { qualities, title } = await resolveQualities(video);
-          if (title && !video.title) video.title = title;
-          // Stamp platform + carry the page Referer onto each quality so the
-          // download step re-injects it for token/domain-gated CDN fetches.
-          const tokenExp = jwtExpFromUrl(video.url || '');
+        // Stamp platform + carry the page Referer onto each quality so the
+        // download step re-injects it for token/domain-gated CDN fetches.
+        const stamp = (qualities, from) => {
+          const tokenExp = jwtExpFromUrl(from.url || '');
           qualities.forEach(q => {
-            q.platform = video.platform;
+            q.platform = from.platform;
             // Carried so a download failure can report whether the playback
             // token had already lapsed by the time we hit the CDN.
             if (tokenExp) q.tokenExp = tokenExp.toISOString();
-            if (!q.headers && video.pageUrl && video.platform !== 'youtube' && q.kind !== 'vimeo-json') {
-              q.headers = { Referer: video.pageUrl };
+            if (!q.headers && from.pageUrl && from.platform !== 'youtube' && q.kind !== 'vimeo-json') {
+              q.headers = { Referer: from.pageUrl };
             }
           });
-          sendResponse({ ok: true, qualities, title: video.title });
+          return qualities;
+        };
+
+        try {
+          const { qualities, title } = await resolveQualities(video);
+          if (title && !video.title) video.title = title;
+          sendResponse({ ok: true, qualities: stamp(qualities, video), title: video.title });
         } catch (e) {
           // Hash presence is the first thing to check on a Vimeo failure.
           const hash = video.platform === 'vimeo' && !video.jsonPlaylist ? ` (h=${video.hParam ? 'yes' : 'no'})` : '';
+          // A Vimeo embed we can't read is not the end of it when the player's
+          // own stream was captured: that capture is signed for playback and is
+          // the whole reason the error tells people to press play. Normally the
+          // frame link has already merged the two, so this only fires when the
+          // iframe loaded unseen — but that is exactly the case where the row
+          // the customer clicks is the one that cannot work.
+          const captures = vimeoStandIns(video, listVideos(tabId));
+          if (captures.length === 1) {
+            try {
+              const rescue = await resolveVimeoJsonQualities(captures[0].url);
+              svdLog('resolve', `vimeo${hash}: ${e.message} — resolved from the captured stream instead`);
+              sendResponse({ ok: true, qualities: stamp(rescue, captures[0]), title: video.title });
+              return;
+            } catch (e2) {
+              svdLog('resolve', `vimeo fallback to captured stream failed: ${e2.message}`);
+            }
+          }
           svdLog('resolve', `${video.platform}${hash}: ${e.message}`);
-          sendResponse({ ok: false, error: e.message });
+          // With several captured streams on the page there is no safe way to
+          // pick one, so name the row that works rather than repeating advice
+          // the customer has already followed.
+          const error = captures.length > 1
+            ? `${e.message} This lesson's stream was captured — pick the “Vimeo (from player)” entry in the list instead.`
+            : e.message;
+          sendResponse({ ok: false, error });
         } finally {
           if (ruleId != null) await removeHeaderRules(ruleId);
         }
