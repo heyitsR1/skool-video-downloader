@@ -10,3 +10,9 @@ node_modules/
 
 # Local wrangler state/cache — not source.
 .wrangler/
+
+# The licensing Worker is a separate, private service.
+worker/
+
+# Maintainer-only release tooling (lives with the Worker).
+scripts/publish-version.mjs
