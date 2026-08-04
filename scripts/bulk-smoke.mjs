@@ -534,5 +534,47 @@ console.log('\nmanifest / resume (G1)');
   check('empty run', bulk.runSummary([]), { total: 0, saved: 0, skipped: 0, failed: 0, skippedByReason: {}, failedByReason: {} });
 }
 
+console.log('\nnativePlaybackFrom (§2.5)');
+{
+  const unlocked = bulk.nativePlaybackFrom(fixture('lesson-video-unlocked'));
+  check('unlocked resolves', unlocked.ok, true);
+  check('primary host is Skool\'s Mux domain', unlocked.masterUrl,
+    'https://stream.video.skool.com/PLAYBACKIDPLACEHOLDER0000000000000000000000000.m3u8?token=header.payload.signature');
+  check('a fallback host is offered', unlocked.fallbackUrl,
+    'https://stream.mux.com/PLAYBACKIDPLACEHOLDER0000000000000000000000000.m3u8?token=header.payload.signature');
+  check('duration carried', unlocked.durationMs, 618966);
+  check('token expiry carried', unlocked.tokenExpire, 1785900683);
+
+  // The whole point: everything else looks healthy on a locked lesson.
+  const locked = bulk.nativePlaybackFrom(fixture('lesson-video-locked'));
+  check('locked is refused', { ok: locked.ok, code: locked.code }, { ok: false, code: 'locked' });
+  ok('locked fixture still has a playbackId', !!fixture('lesson-video-locked').video.playbackId);
+  ok('locked fixture still reports ready', fixture('lesson-video-locked').video.status === 'ready');
+  ok('locked fixture still reports a duration', fixture('lesson-video-locked').video.duration > 0);
+  ok('locked fixture has no hasAccess field to consult',
+    !('hasAccess' in fixture('lesson-video-locked').video));
+
+  check('no video object at all', bulk.nativePlaybackFrom({}).code, 'locked');
+  check('null pageProps', bulk.nativePlaybackFrom(null).code, 'locked');
+  check('an empty token string is not a token', bulk.nativePlaybackFrom({ video: { playbackId: 'p', playbackToken: '' } }).code, 'locked');
+  check('a token with no playbackId cannot build a URL', bulk.nativePlaybackFrom({ video: { playbackToken: 't' } }).code, 'locked');
+  check('a non-string token is not a token', bulk.nativePlaybackFrom({ video: { playbackId: 'p', playbackToken: 1 } }).code, 'locked');
+
+  // status is never consulted: a ready-looking locked lesson is the case above,
+  // and refusing an unready-looking one would be a guess this file has not
+  // verified. The token is the only signal.
+  check('an unready status with a token still resolves',
+    bulk.nativePlaybackFrom({ video: { playbackId: 'p', playbackToken: 't', status: 'preparing' } }).ok, true);
+
+  // A token is interpolated into a query string, so it is encoded. Real tokens
+  // are base64url and unaffected; one that is not would otherwise truncate.
+  check('a token needing encoding is encoded',
+    bulk.nativePlaybackFrom({ video: { playbackId: 'p', playbackToken: 'a+b&c' } }).masterUrl,
+    'https://stream.video.skool.com/p.m3u8?token=a%2Bb%26c');
+  check('a playbackId needing encoding is encoded',
+    bulk.nativePlaybackFrom({ video: { playbackId: 'a/b', playbackToken: 't' } }).masterUrl,
+    'https://stream.video.skool.com/a%2Fb.m3u8?token=t');
+}
+
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : '✓ all assertions hold'}`);
 process.exit(failures ? 1 : 0);

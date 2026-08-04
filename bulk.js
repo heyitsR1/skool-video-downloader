@@ -468,6 +468,43 @@ function parseResources(raw) {
   return out;
 }
 
+// ── Skool-native playback ─────────────────────────────────────────────────────
+// A lesson page carries its own signed playback data at pageProps.video.
+//
+// Access is decided by ONE signal: the presence of playbackToken. On a lesson the
+// account cannot watch, playbackId, status:"ready" and duration are all still
+// present and only the token is missing — and metadata.hasAccess is absent
+// rather than false, so it can never be used to decide this. Treating a missing
+// hasAccess as "has access" would report a fully gated course as fully
+// downloadable.
+//
+// 'locked' also covers a lesson with no video object at all. That is the safe
+// direction: 'locked' is deliberately not a settling kind, so such a lesson is
+// retried on a later run rather than written off.
+//
+// The playlist needs no Referer, so no header rules are involved on this path.
+
+const NATIVE_HOST_PRIMARY = 'stream.video.skool.com';
+const NATIVE_HOST_FALLBACK = 'stream.mux.com';
+
+function nativeMasterUrl(host, playbackId, token) {
+  return `https://${host}/${encodeURIComponent(playbackId)}.m3u8?token=${encodeURIComponent(token)}`;
+}
+
+function nativePlaybackFrom(pageProps) {
+  const v = pageProps && typeof pageProps === 'object' ? pageProps.video : null;
+  const playbackId = v && typeof v.playbackId === 'string' && v.playbackId ? v.playbackId : null;
+  const token = v && typeof v.playbackToken === 'string' && v.playbackToken ? v.playbackToken : null;
+  if (!playbackId || !token) return { ok: false, code: 'locked' };
+  return {
+    ok: true,
+    masterUrl: nativeMasterUrl(NATIVE_HOST_PRIMARY, playbackId, token),
+    fallbackUrl: nativeMasterUrl(NATIVE_HOST_FALLBACK, playbackId, token),
+    durationMs: typeof v.duration === 'number' ? v.duration : null,
+    tokenExpire: typeof v.expire === 'number' ? v.expire : null,
+  };
+}
+
 // ── Manifest and resume (G1) ──────────────────────────────────────────────────
 // The manifest is the only record of what is on disk, because the downloads API
 // cannot stat the filesystem. Its one non-negotiable rule: decide from `assets`,
@@ -552,6 +589,7 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument,
     FILE_ID_RE, parseResources,
+    NATIVE_HOST_PRIMARY, NATIVE_HOST_FALLBACK, nativePlaybackFrom,
     SETTLED_SKIP_KINDS, isSettled, normalizeAssets, lessonNeedsWork, mergeManifest, runSummary,
   };
 }
