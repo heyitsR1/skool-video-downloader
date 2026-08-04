@@ -1320,14 +1320,37 @@ function saveViaOffscreenAnchor(filename, size) {
       finish(reject, new Error(SAVE_BLOCKED_MESSAGE));
     }, SAVE_START_TIMEOUT_MS);
 
-    sendToOffscreen({ type: 'SAVE_CLICK', filename }).then((res) => {
-      if (!res?.success) { finish(reject, new Error(res?.error || 'Save failed')); return; }
-      // The offscreen document starts the download itself and hands back the id,
-      // so there is nothing to identify after the fact. The onCreated listener
-      // and the poll below stay for the anchor fallback, which cannot report one.
-      if (typeof res.downloadId === 'number') finish(resolve, res.downloadId);
-      else if (res.fallback) svdLog('save', `save fell back to the anchor: ${String(res.fallback).slice(0, 90)}`);
-    });
+    (async () => {
+      // Preferred path: the worker downloads the blob URL the offscreen document
+      // minted. It is the only way the file can land in a subfolder — an
+      // <a download> attribute cannot hold a directory, so the anchor below
+      // flattens "Course/01 Lesson.mp4" and drops it beside the folder. Measured
+      // on a real course backup, where the video landed in Downloads while the
+      // manifest recorded the path it was supposed to have.
+      //
+      // chrome.downloads is not exposed to offscreen documents, so the download
+      // has to start here; a worker-initiated download of a blob URL minted
+      // there does work, whatever the older comment in offscreen.js says.
+      try {
+        const ready = await sendToOffscreen({ type: 'GET_DOWNLOAD_URL' });
+        if (ready?.downloadUrl) {
+          const id = await chrome.downloads.download({
+            url: ready.downloadUrl, filename,
+            // A course run replaces its own earlier attempt; a one-off save must
+            // never quietly overwrite a file the user already has.
+            conflictAction: bulkRunActive ? BULK_CONFLICT_ACTION : 'uniquify',
+            saveAs: false,
+          });
+          finish(resolve, id);
+          return;
+        }
+      } catch (e) {
+        // Not fatal: the anchor still saves the file, just in the wrong folder.
+        svdLog('save', `direct save failed, using the anchor: ${String(e.message).slice(0, 90)}`);
+      }
+      const res = await sendToOffscreen({ type: 'SAVE_CLICK', filename });
+      if (!res?.success) finish(reject, new Error(res?.error || 'Save failed'));
+    })();
   });
 }
 
