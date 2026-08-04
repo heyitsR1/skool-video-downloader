@@ -1,0 +1,12 @@
+{
+  "renderData": {
+    "course": {
+      "course": { "id": "c0", "metadata": { "title": "Flat Course" } },
+      "children": [
+        { "course": { "id": "l1", "metadata": { "title": "First Lesson", "videoId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", "videoLenMs": 60000 } }, "children": [] },
+        { "course": { "id": "l2", "metadata": { "title": "Second Lesson", "videoLink": "https://www.loom.com/share/00000000000000000000000000000002" } }, "children": [] },
+        { "course": { "id": "l3", "metadata": { "title": "Notes Only" } }, "children": [] }
+      ]
+    }
+  }
+}

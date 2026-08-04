@@ -1,0 +1,22 @@
+{
+  "renderData": {
+    "course": {
+      "course": { "id": "c0", "metadata": { "title": "Nested Course" } },
+      "children": [
+        {
+          "course": { "id": "m1", "metadata": { "title": "Module One" } },
+          "children": [
+            { "course": { "id": "l1", "metadata": { "title": "Intro", "videoId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1" } }, "children": [] },
+            { "course": { "id": "l2", "metadata": { "title": "Setup", "videoId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2" } }, "children": [] }
+          ]
+        },
+        {
+          "course": { "id": "m2", "metadata": { "title": "Module Two" } },
+          "children": [
+            { "course": { "id": "l3", "metadata": { "title": "Deep Dive", "videoLink": "https://vimeo.com/123456789" } }, "children": [] }
+          ]
+        }
+      ]
+    }
+  }
+}

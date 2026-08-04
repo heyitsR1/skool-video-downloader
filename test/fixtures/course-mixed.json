@@ -1,0 +1,17 @@
+{
+  "renderData": {
+    "course": {
+      "course": { "id": "c0", "metadata": { "title": "Mixed Course" } },
+      "children": [
+        { "course": { "id": "loose", "metadata": { "title": "Start Here", "videoId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0" } }, "children": [] },
+        {
+          "course": { "id": "m1", "metadata": { "title": "Interviews" } },
+          "children": [
+            { "course": { "id": "l1", "metadata": { "title": "Interview One", "videoId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1" } }, "children": [] },
+            { "course": { "id": "l2", "metadata": { "title": "Interview Two", "videoId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2" } }, "children": [] }
+          ]
+        }
+      ]
+    }
+  }
+}
