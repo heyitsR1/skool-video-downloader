@@ -1,0 +1,11 @@
+{
+  "video": {
+    "id": "11111111111111111111111111111111",
+    "playbackId": "PLAYBACKIDPLACEHOLDER0000000000000000000000000",
+    "playbackToken": "header.payload.signature",
+    "expire": 1785900683,
+    "duration": 618966,
+    "aspectRatio": "16:9",
+    "status": "ready"
+  }
+}

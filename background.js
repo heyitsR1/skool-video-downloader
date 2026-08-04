@@ -6,7 +6,7 @@
 // Next.js props. The popup resolves qualities on demand, then hands a download
 // job to the concurrent queue here, which fetches + remuxes to MP4 in-browser.
 
-importScripts('detectors.js', 'buildConfig.js');
+importScripts('bulk.js', 'detectors.js', 'buildConfig.js');
 
 const WORKER_URL = 'https://skool-dl-license.aarohan567.workers.dev';
 
@@ -42,6 +42,49 @@ function svdLog(context, message) {
     } catch { /* logging must never break anything */ }
   });
   return logChain;
+}
+
+// ── Bulk-run log ──────────────────────────────────────────────────────────────
+// A bulk course run's own lines live in a SEPARATE key, and the reason is the
+// arithmetic: a report carries only the last 10 log lines, and one 40-lesson run
+// produces well over a hundred ordinary 'save' lines. In the shared rolling log
+// the run's start line — which course, what shape, what was asked for — is gone
+// long before the run ends, and a bulk report without it cannot be answered.
+//
+// So these get their own buffer and reserved slots in the report. bulk.js keeps
+// the run to four or five lines total; see its "Run diagnostics" section for why
+// nothing here may log per lesson.
+const BULK_LOG_LINES = 8;
+// How many of those slots the report guarantees. The rest of the 10 go to the
+// general log, so an unrelated failure during the run is still visible.
+const BULK_LOG_RESERVED = 5;
+// Matches the report worker's own cap. Sending more is silently truncated there.
+const REPORT_LOG_LINES = 10;
+
+function bulkLog(message) {
+  const ts = new Date().toISOString();
+  logChain = logChain.then(async () => {
+    try {
+      const { bulkLog: lines = [] } = await chrome.storage.local.get('bulkLog');
+      lines.push({ ts, context: 'bulk', message: String(message).slice(0, 300) });
+      await chrome.storage.local.set({ bulkLog: lines.slice(-BULK_LOG_LINES) });
+    } catch { /* logging must never break anything */ }
+  });
+  return logChain;
+}
+
+// Set for the duration of a bulk run. The per-download success line is genuinely
+// useful for a single download and pure noise ×150 during a course backup, where
+// it would evict every other line in the shared log.
+let bulkRunActive = false;
+
+// Bulk lines take reserved slots at the front rather than competing on recency,
+// then the most recent general lines fill what is left.
+function composeReportLog(bulkLines, generalLines, max = REPORT_LOG_LINES) {
+  const bulk = (Array.isArray(bulkLines) ? bulkLines : []).slice(-Math.min(max, BULK_LOG_RESERVED));
+  const room = Math.max(0, max - bulk.length);
+  const general = room ? (Array.isArray(generalLines) ? generalLines : []).slice(-room) : [];
+  return [...bulk, ...general];
 }
 
 // Skool-native (Mux) masters carry a signed-playback JWT in ?token=. Decoding
@@ -634,7 +677,7 @@ function describeVersion(status) {
 async function sendErrorReport(note, email, tabId) {
   await registryReady; // 'detected' must reflect the restored registry, not a cold Map
   await logChain;      // and the log must include the failure the user is reporting
-  const { debugLog = [] } = await chrome.storage.local.get('debugLog');
+  const { debugLog = [], bulkLog: bulkLines = [] } = await chrome.storage.local.get(['debugLog', 'bulkLog']);
   const [license, installId, versionStatus] = await Promise.all([
     getLicenseStatus().catch(() => null),
     getInstallId().catch(() => undefined),
@@ -668,7 +711,9 @@ async function sendErrorReport(note, email, tabId) {
       || (Number.isFinite(license?.remaining) ? `free (${license.remaining}/${license.limit} left)` : 'free'),
     detected: detected.length ? detected.join(', ').slice(0, 300) : 'none',
     installId,
-    log: debugLog.slice(-10),
+    // Bulk lines first with reserved slots — without that a course backup's own
+    // diagnosis loses every slot to its own successful downloads.
+    log: composeReportLog(bulkLines, debugLog),
   };
   for (const base of REPORT_API_BASES) {
     try {
@@ -751,6 +796,9 @@ const RULE_RANGE_DOWNLOAD = 1000000; // 1000000–1099999
 const downloadRuleId = (jobId) => RULE_RANGE_DOWNLOAD + (jobId % 100000);
 const resolveRuleId = (tabId) =>
   RULE_RANGE_RESOLVE + (tabId > 0 ? tabId % 90000 : Math.floor(Math.random() * 90000));
+// Outside the tab-derived span above, so a course run and a popup resolving a
+// quality picker at the same moment cannot remove each other's rule.
+const BULK_RESOLVE_RULE_ID = RULE_RANGE_RESOLVE + 99999;
 
 async function applyHeaderRules(ruleId, sampleUrl, headers) {
   if (!headers || (!headers.Referer && !headers.Origin)) return false;
@@ -1205,6 +1253,9 @@ function saveBlob(blob, filename) {
       const downloadId = await saveViaOffscreenAnchor(filename, blob.size);
       const { state, error } = await waitForDownloadEnd(downloadId);
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
+      // Returned so a bulk run can record it: the downloads API is the only way
+      // to ask whether a file is still on disk, and it answers by id.
+      return downloadId;
     } finally {
       await cache.delete(key);
       await sendToOffscreen({ type: 'MERGE_CLEANUP' });
@@ -1242,8 +1293,13 @@ function saveViaOffscreenAnchor(filename, size) {
       // Size matters more than latency here: the two are proportional (Chrome
       // copies the whole blob before creating the item), and a report that says
       // how many bytes were handed over answers "the file won't open" outright.
-      svdLog('save', `download started after ${Date.now() - startedAt}ms via ${how}`
-        + ` (id ${item.id}${size ? `, ${formatGB(size)}` : ''})`);
+      // Suppressed during a bulk run: see BULK_LOG_RESERVED. One course backup
+      // fires this a hundred-plus times and would leave the report holding
+      // nothing else.
+      if (!bulkRunActive) {
+        svdLog('save', `download started after ${Date.now() - startedAt}ms via ${how}`
+          + ` (id ${item.id}${size ? `, ${formatGB(size)}` : ''})`);
+      }
       finish(resolve, item.id);
     };
     const onCreated = (item) => {
@@ -1264,9 +1320,37 @@ function saveViaOffscreenAnchor(filename, size) {
       finish(reject, new Error(SAVE_BLOCKED_MESSAGE));
     }, SAVE_START_TIMEOUT_MS);
 
-    sendToOffscreen({ type: 'SAVE_CLICK', filename }).then((res) => {
+    (async () => {
+      // Preferred path: the worker downloads the blob URL the offscreen document
+      // minted. It is the only way the file can land in a subfolder — an
+      // <a download> attribute cannot hold a directory, so the anchor below
+      // flattens "Course/01 Lesson.mp4" and drops it beside the folder. Measured
+      // on a real course backup, where the video landed in Downloads while the
+      // manifest recorded the path it was supposed to have.
+      //
+      // chrome.downloads is not exposed to offscreen documents, so the download
+      // has to start here; a worker-initiated download of a blob URL minted
+      // there does work, whatever the older comment in offscreen.js says.
+      try {
+        const ready = await sendToOffscreen({ type: 'GET_DOWNLOAD_URL' });
+        if (ready?.downloadUrl) {
+          const id = await chrome.downloads.download({
+            url: ready.downloadUrl, filename,
+            // A course run replaces its own earlier attempt; a one-off save must
+            // never quietly overwrite a file the user already has.
+            conflictAction: bulkRunActive ? BULK_CONFLICT_ACTION : 'uniquify',
+            saveAs: false,
+          });
+          finish(resolve, id);
+          return;
+        }
+      } catch (e) {
+        // Not fatal: the anchor still saves the file, just in the wrong folder.
+        svdLog('save', `direct save failed, using the anchor: ${String(e.message).slice(0, 90)}`);
+      }
+      const res = await sendToOffscreen({ type: 'SAVE_CLICK', filename });
       if (!res?.success) finish(reject, new Error(res?.error || 'Save failed'));
-    });
+    })();
   });
 }
 
@@ -1443,6 +1527,7 @@ function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving) {
       const downloadId = await saveViaOffscreenAnchor(`${filename}.mp4`, result.size);
       const { state, error } = await waitForDownloadEnd(downloadId);
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
+      return downloadId;   // see saveBlob — the manifest's disk check needs it
     } finally {
       await Promise.all([cache.delete(videoKey), cache.delete(audioKey)]).catch(() => {});
       await sendToOffscreen({ type: 'MERGE_CLEANUP' }).catch(() => {});
@@ -1474,13 +1559,40 @@ function updateJob(jobId, patch) {
 
 // mode: undefined = normal combined download (merged, costs a credit);
 // 'video' | 'audio' = single-rendition free download (no merge, no credit).
-function enqueueDownload({ quality, filename, tabId, platform, label, mode }) {
+function enqueueDownload({ quality, filename, tabId, platform, label, mode, onSettled }) {
   const jobId = ++jobSeq;
   const meta = { filename, platform, label, mode, percent: 0, phase: 'queued', speed: '' };
-  downloadQueue.push({ jobId, quality, filename, tabId, mode, meta });
+  downloadQueue.push({ jobId, quality, filename, tabId, mode, meta, onSettled });
   broadcast({ type: 'QUEUE_ADD', item: { jobId, ...meta, state: 'queued' } });
   pump();
   return jobId;
+}
+
+// Promise form for callers that must wait for a job to finish — the bulk
+// orchestrator downloads one lesson at a time and needs to know the outcome
+// before it records the manifest entry and moves on.
+//
+// It resolves rather than rejects on failure: a bulk run turns one lesson's
+// failure into a named record and carries on, and an unhandled rejection
+// escaping into the queue would take the whole course down with it.
+function enqueueDownloadAwaited(opts) {
+  return new Promise((resolve) => {
+    const jobId = enqueueDownload({ ...opts, onSettled: resolve });
+    // The caller awaits the outcome, so it never sees the job id otherwise —
+    // and without it a cancel cannot reach the download that is in flight.
+    opts.onJobId?.(jobId);
+  });
+}
+
+// Settling is what a bulk run is blocked on, so it must happen exactly once per
+// job and on EVERY path a job can leave by — including the two that never reach
+// runJob at all (see cancelJob and forgetTabVideos). A job that ends without
+// settling does not fail the run; it hangs it, with no error and no progress.
+function settleJob(job, outcome) {
+  const fn = job?.onSettled;
+  if (!fn) return;
+  job.onSettled = null;   // once, whichever path gets here first
+  try { fn(outcome); } catch { /* a caller's handler must not break the queue */ }
 }
 
 function pump() {
@@ -1490,7 +1602,8 @@ function pump() {
   }
 }
 
-async function runJob({ jobId, quality, filename, tabId, mode }) {
+async function runJob(job) {
+  const { jobId, quality, filename, tabId, mode } = job;
   const cancelled = [false];
   const meta = { jobId, filename, platform: quality.platform, mode, percent: 0, phase: 'starting', speed: '' };
   activeJobs.set(jobId, { cancel: () => { cancelled[0] = true; }, meta });
@@ -1569,7 +1682,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (isCancelled()) throw new Error('Cancelled');
       setPct(97, 'saving');
-      await saveBlob(blob, mode === 'audio' ? `${filename}.m4a` : `${filename}.mp4`);
+      meta.downloadId = await saveBlob(blob, mode === 'audio' ? `${filename}.m4a` : `${filename}.mp4`);
 
     } else if (quality.kind === 'mp4') {
       const blob = await downloadDirect(quality.videoUrl, {
@@ -1577,7 +1690,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         onProgress: (done, total, bytes) => setPct(total ? (done / total) * 95 : 50, 'downloading', bytes)
       });
       setPct(97, 'saving');
-      await saveBlob(blob, `${filename}.mp4`);
+      meta.downloadId = await saveBlob(blob, `${filename}.mp4`);
 
     } else if (quality.kind === 'hls') {
       const videoBlob = await downloadRendition(quality.videoUrl, {
@@ -1586,7 +1699,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (!quality.audioUrl) {
         setPct(96, 'saving');
-        await saveBlob(videoBlob, `${filename}.mp4`);
+        meta.downloadId = await saveBlob(videoBlob, `${filename}.mp4`);
       } else {
         const audioBlob = await downloadRendition(quality.audioUrl, {
           isCancelled, ...netOpts, mimeType: 'audio/mp4',
@@ -1594,7 +1707,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
       }
 
     } else if (quality.kind === 'vimeo-json') {
@@ -1604,7 +1717,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (!quality.audioTrackId) {
         setPct(96, 'saving');
-        await saveBlob(videoBlob, `${filename}.mp4`);
+        meta.downloadId = await saveBlob(videoBlob, `${filename}.mp4`);
       } else {
         const audioBlob = await downloadVimeoTrack(quality.playlistUrl, 'audio', quality.audioTrackId, {
           isCancelled, ...netOpts,
@@ -1612,7 +1725,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
       }
 
     } else if (quality.kind === 'merge') {
@@ -1626,7 +1739,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (isCancelled()) throw new Error('Cancelled');
       setPct(82, 'merging');
-      await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+      meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
     }
 
     meta.percent = 100; meta.phase = 'done'; meta.speed = '';
@@ -1638,7 +1751,12 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
 
   } catch (e) {
     if (e.message === 'Cancelled') {
-      recordFinished({ ...meta, phase: 'cancelled' }, 'cancelled');
+      // Mutated, not just spread into recordFinished: the finally below reads
+      // meta.phase to decide the outcome, and a cancelled job left reading
+      // 'downloading' would settle as a success — which a bulk run would record
+      // in the manifest as saved and never retry.
+      meta.phase = 'cancelled';
+      recordFinished(meta, 'cancelled');
       broadcast({ type: 'QUEUE_CANCELLED', jobId });
     } else {
       // Not every fetch in a job runs through fetchWithRetry — progressive
@@ -1658,6 +1776,12 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
   } finally {
     if (ruleId != null) await removeHeaderRules(ruleId);
     activeJobs.delete(jobId);
+    // Settle BEFORE pump(), so an awaiting bulk run resumes before the next job
+    // starts. Settling after would let the two interleave, which is exactly what
+    // downloading a course one lesson at a time exists to prevent.
+    settleJob(job, meta.phase === 'error' ? { ok: false, error: meta.error }
+      : meta.phase === 'cancelled' ? { ok: false, cancelled: true }
+      : { ok: true, downloadId: meta.downloadId ?? null });
     pump();
   }
 }
@@ -1666,7 +1790,14 @@ function cancelJob(jobId) {
   const active = activeJobs.get(jobId);
   if (active) { active.cancel(); return; }
   const idx = downloadQueue.findIndex(q => q.jobId === jobId);
-  if (idx >= 0) { downloadQueue.splice(idx, 1); broadcast({ type: 'QUEUE_CANCELLED', jobId }); }
+  if (idx >= 0) {
+    const [dropped] = downloadQueue.splice(idx, 1);
+    // A job cancelled while still queued never reaches runJob, so runJob's
+    // finally never runs and nothing else would ever settle it. An awaiting
+    // bulk run would then wait forever — no error, no progress, no way out.
+    settleJob(dropped, { ok: false, cancelled: true });
+    broadcast({ type: 'QUEUE_CANCELLED', jobId });
+  }
 }
 
 // ── Message router ─────────────────────────────────────────────────────────────
@@ -1828,6 +1959,956 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     case 'GET_VERSION_STATUS':
       getVersionStatus().then(sendResponse).catch(() => sendResponse(null));
       return true;
+
+    case 'BULK_PREFLIGHT':
+      (async () => {
+        try {
+          const { group, courseSlug } = parseClassroomUrl(req.url);
+          if (!courseSlug) { sendResponse({ ok: false, code: 'not-a-course' }); return; }
+          const scan = await scanCourse(group, courseSlug);
+          const manifest = await loadManifest(group, courseSlug);
+          const merged = mergeManifest(manifest, scan.lessons);
+          const want = { video: true, notes: true, files: true };
+          const remaining = merged.filter(l =>
+            lessonNeedsWork(l.priorAssets, want, parseResources(l.resourcesRaw).files.map(f => f.fileId))).length;
+          sendResponse({ ok: true, group, courseSlug, courseTitle: scan.courseTitle,
+            shape: scan.shape, moduleCount: scan.moduleCount, total: scan.lessons.length,
+            alreadySaved: scan.lessons.length - remaining, remaining });
+        } catch (e) {
+          sendResponse({ ok: false, code: e instanceof BulkError ? e.code : 'network', message: e.message });
+        }
+      })();
+      return true;
+
+    case 'START_BULK':
+    case 'RESUME_BULK':
+      (async () => {
+        // Gated here as well as in the popup: a UI-only check is not a gate.
+        const { tier } = await getLicenseStatus();
+        if (tier !== 'lifetime' && tier !== 'monthly') { sendResponse({ ok: false, code: 'pro-required' }); return; }
+        // Two popups (or two windows) can each send a start. Without this the
+        // second orchestrator races the first over the same manifest and
+        // downloads every remaining lesson twice.
+        if (bulkRunActive) { sendResponse({ ok: false, code: 'already-running' }); return; }
+        sendResponse({ ok: true, started: true });
+        try {
+          // START and RESUME are the same call: the skip decision comes from the
+          // manifest, so resuming is running again. Both cases exist only so the
+          // popup can label the button honestly.
+          await runBulkCourse({
+            group: req.group, courseSlug: req.courseSlug,
+            want: req.want || { video: true, notes: true, files: true },
+          });
+        } catch (e) {
+          const code = e instanceof BulkError ? e.code : 'network';
+          await setBulkState({ phase: 'error', code, message: e.message });
+          bulkBroadcast({ type: 'BULK_DONE', error: code, message: e.message });
+        }
+      })();
+      return true;
+
+    case 'PAUSE_BULK':
+      bulkAbort.pause = true;
+      sendResponse({ ok: true });
+      return false;
+
+    case 'CANCEL_BULK':
+      bulkAbort.cancel = true;
+      // Cancelling stops the run but keeps the manifest — it means "stop", not
+      // "throw away what I already downloaded". The in-flight download is
+      // cancelled too: the loop only checks the abort flags between lessons, so
+      // without this a cancel would sit through the rest of a long video.
+      if (bulkCurrentJobId !== null) cancelJob(bulkCurrentJobId);
+      sendResponse({ ok: true });
+      return false;
+
+    case 'GET_BULK_STATE':
+      getBulkState().then(state => sendResponse({ ok: true, state }));
+      return true;
+
+    case 'CLEAR_MANIFEST':
+      clearManifest(req.group, req.courseSlug).then(() => sendResponse({ ok: true }));
+      return true;
   }
   return true;
 });
+
+// ── Bulk course backup ────────────────────────────────────────────────────────
+// One authenticated fetch of a classroom course page enumerates every lesson, so
+// this runs entirely here — no tab to drive, no page to keep focused. Each
+// lesson's media is resolved immediately before it downloads, never in a
+// preflight sweep: a lesson page is around half a megabyte, and playback tokens
+// expire in about a day.
+
+const BULK_FETCH_TIMEOUT_MS = 30000;
+
+// Every network call carries a timeout. A probe with no deadline is worse than
+// the guess it replaced, because it can hang a run with no way out.
+async function bulkFetch(url, init = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), init.timeoutMs || BULK_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { credentials: 'include', ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+class BulkError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+// Fetches a Skool page and returns its server props, plus the URL we ended up on.
+// The final URL matters: a signed-out request for a classroom page is answered
+// with a redirect to the community's about page rather than an error.
+async function fetchPageProps(url) {
+  const res = await bulkFetch(url);
+  const html = await res.text();
+  return {
+    finalUrl: res.url, status: res.status, pageProps: extractPageProps(html),
+    // Kept for diagnostics only. Every scan failure below tells the user to send
+    // a problem report, and "the page format changed" is unactionable without
+    // some evidence of what actually arrived — an error page, a login wall and a
+    // genuine schema change are three different fixes and look identical here.
+    bytes: html.length,
+  };
+}
+
+// Where a redirect landed, minus the query string. A scan failure is almost
+// always a redirect somewhere unexpected, and the path is what identifies it.
+function bulkPathOf(url) {
+  try { return new URL(url).pathname.slice(0, 80); } catch { return String(url).slice(0, 80); }
+}
+
+// Enumerate a course. Distinguishes four outcomes that all look like "no
+// lessons" if you only count them.
+async function scanCourse(group, courseSlug) {
+  let probe;
+  try {
+    probe = await fetchPageProps(courseUrlFor(group, courseSlug));
+  } catch (e) {
+    // A timeout and a dropped connection are both AbortError-ish here; the
+    // message is the only thing that tells them apart in a report.
+    bulkLog(`scan fetch failed: ${e.name}: ${String(e.message).slice(0, 120)}`);
+    throw new BulkError('network', 'Could not reach Skool. Check your connection and try again.');
+  }
+
+  const { finalUrl, status, pageProps, bytes } = probe;
+  // One line describing what came back, logged only when the scan fails. On a
+  // healthy run the start line in runBulkCourse says everything this would.
+  const shape = () => `HTTP ${status} ${bulkPathOf(finalUrl)} ${bytes}b props=${pageProps ? 'yes' : 'no'}`;
+
+  if (!finalUrl.includes('/classroom/')) {
+    // Signed out: Skool answers a classroom URL with the community about page.
+    bulkLog(`scan redirected off /classroom/ — ${shape()}`);
+    throw new BulkError('not-signed-in', 'Sign in to Skool in this browser, then try again.');
+  }
+  if (status === 429) {
+    bulkLog(`scan rate-limited — ${shape()}`);
+    throw new BulkError('rate-limited', 'Skool is rate-limiting this browser. Wait a few minutes and try again.');
+  }
+  if (!pageProps) {
+    // No __NEXT_DATA__ at all: an error page, an interstitial, or a real change.
+    bulkLog(`scan found no page data — ${shape()}`);
+    throw new BulkError('schema-drift', 'Skool\'s page format changed. Please send a problem report.');
+  }
+  if (pageProps.self == null) {
+    bulkLog(`scan has page data but no signed-in user — ${shape()}`);
+    throw new BulkError('not-signed-in', 'Sign in to Skool in this browser, then try again.');
+  }
+
+  const tree = courseTreeFromPageProps(pageProps, group, courseSlug);
+  if (!tree.ok) {
+    // tree.detail is the whole reason the walk reports a code rather than
+    // throwing: it names which of the two indistinguishable cases this is, and
+    // for drift, what the walk actually saw.
+    bulkLog(`scan ${tree.code}: ${tree.detail || 'no detail'} — ${shape()}`);
+    if (tree.code === 'empty-course') throw new BulkError('empty-course', 'This course has no lessons yet.');
+    throw new BulkError('schema-drift', 'Skool\'s page format changed. Please send a problem report.');
+  }
+
+  return { ...tree, group, courseSlug };
+}
+
+// Resolve one lesson to something downloadable, called immediately before the
+// download itself rather than in a preflight sweep — a lesson page is around
+// half a megabyte and a playback token expires in about a day.
+//
+// Embed platforms go through the existing resolvers, so a bulk download and a
+// single-lesson download of the same video cannot drift apart.
+//
+// → { kind: 'qualities', qualities, platform }
+//   { kind: 'link', url }        YouTube — handed off, not downloaded
+//   { kind: 'notes-only' }       a text lesson
+//   { kind: 'skip', reason, detail? }
+//
+// Every skip carries a reason that survives into the run tally, and `detail`
+// carries the one worked example the report shows for that reason. A skip whose
+// reason is 'unknown' settles permanently (SETTLED_SKIP_KINDS); every other
+// reason here stays retryable, because access, network and Skool's own schema
+// can all change between runs.
+async function resolveBulkLesson(lesson) {
+  switch (lesson.sourceKind) {
+    case SOURCE.NATIVE: {
+      const { pageProps, status, finalUrl } = await fetchPageProps(lesson.lessonUrl);
+      if (!pageProps) {
+        return { kind: 'skip', reason: 'schema-drift',
+          detail: `lesson page had no data (HTTP ${status} ${bulkPathOf(finalUrl)})` };
+      }
+      const play = nativePlaybackFrom(pageProps);
+      // §2.5: on a locked lesson playbackId, status:"ready" and duration are all
+      // still present and only the token is missing. Not settling means a later
+      // run retries it once the user gains access.
+      if (!play.ok) return { kind: 'skip', reason: 'locked' };
+
+      // Both hosts serve the same signed playlist; the fallback covers one of
+      // them going away.
+      //
+      // Both also need a Referer. The CDN 403s any playlist fetch whose Referer
+      // does not match the player's, and a service-worker fetch sends none —
+      // measured against a real course, where the native lesson failed as
+      // 'no-qualities' with a 403 until this rule was applied. The single-lesson
+      // path has always done this; only the course run was missing it.
+      //
+      // Resolving IS the probe: the plan fetched the master once to test it and
+      // then let the resolver fetch it again. On a 40-lesson course that is 40
+      // wasted round trips against a token that is already ticking.
+      const headers = { Referer: lesson.lessonUrl, Origin: 'https://www.skool.com' };
+      let qualities = null, firstError = null;
+      try {
+        await applyHeaderRules(BULK_RESOLVE_RULE_ID, play.masterUrl, headers);
+        for (const url of [play.masterUrl, play.fallbackUrl]) {
+          try {
+            const resolved = await resolveQualities({ platform: 'skool', url });
+            qualities = resolved?.qualities || [];
+            if (qualities.length) break;
+          } catch (e) {
+            firstError = firstError || e;
+            qualities = null;
+          }
+        }
+      } finally {
+        await removeHeaderRules(BULK_RESOLVE_RULE_ID);
+      }
+      // Carried onto every quality: the rule above covers resolution only, and
+      // runJob re-applies these for the segment fetches that follow.
+      for (const q of qualities || []) if (!q.headers) q.headers = headers;
+      if (!qualities || !qualities.length) {
+        return { kind: 'skip', reason: 'no-qualities',
+          detail: firstError ? `both playback hosts failed: ${String(firstError.message).slice(0, 90)}`
+                             : 'playlist listed no renditions' };
+      }
+      // The description comes back on this same page, so a native lesson never
+      // needs the extra fetch the notes step would otherwise make.
+      const meta = findLessonMeta(pageProps, lesson.lessonId);
+      return { kind: 'qualities', qualities, platform: 'skool',
+        desc: typeof meta?.desc === 'string' ? meta.desc : null };
+    }
+
+    case SOURCE.LOOM:
+    case SOURCE.VIMEO:
+    case SOURCE.WISTIA: {
+      if (!lesson.sourceRef) return { kind: 'skip', reason: 'missing-source' };
+      const sourceId = embedSourceId(lesson.sourceKind, lesson.sourceRef);
+      if (!sourceId) {
+        // The host was recognised but the id was not. That is a URL shape we
+        // have not seen, and the link itself is the only useful thing to report.
+        return { kind: 'skip', reason: 'missing-source',
+          detail: `no ${lesson.sourceKind} id in ${String(lesson.sourceRef).slice(0, 90)}` };
+      }
+      // Domain-restricted Vimeo is common on Skool, and some Loom and Wistia
+      // embeds also validate the Referer on the resolution fetch. The
+      // single-lesson path injects the lesson URL for exactly this; a course run
+      // that skipped it would report 'no-qualities' on videos that play fine.
+      const EMBED_API_HOST = { vimeo: 'player.vimeo.com', loom: 'www.loom.com', wistia: 'fast.wistia.net' };
+      const apiHost = EMBED_API_HOST[lesson.sourceKind];
+      let resolved;
+      try {
+        if (apiHost) {
+          await applyHeaderRules(BULK_RESOLVE_RULE_ID, `https://${apiHost}/`, { Referer: lesson.lessonUrl });
+        }
+        resolved = await resolveQualities({
+          platform: lesson.sourceKind, sourceId, pageUrl: lesson.lessonUrl,
+        });
+      } catch (e) {
+        return { kind: 'skip', reason: 'no-qualities',
+          detail: `${lesson.sourceKind}: ${String(e.message).slice(0, 90)}` };
+      } finally {
+        if (apiHost) await removeHeaderRules(BULK_RESOLVE_RULE_ID);
+      }
+      const qualities = resolved?.qualities || [];
+      if (!qualities.length) {
+        return { kind: 'skip', reason: 'no-qualities', detail: `${lesson.sourceKind} returned no renditions` };
+      }
+      // Same as the single-lesson path: the download step re-injects these for
+      // token- and domain-gated CDN fetches.
+      for (const q of qualities) if (!q.headers) q.headers = { Referer: lesson.lessonUrl };
+      return { kind: 'qualities', qualities, platform: lesson.sourceKind };
+    }
+
+    case SOURCE.YOUTUBE:
+      return lesson.sourceRef ? { kind: 'link', url: lesson.sourceRef } : { kind: 'skip', reason: 'missing-source' };
+
+    case SOURCE.TEXT:
+      return { kind: 'notes-only' };
+
+    default:
+      // An embed host the course tree could not name. Nothing can download it,
+      // so this is one of the few skips that settles for good.
+      return { kind: 'skip', reason: 'unknown',
+        detail: `unrecognised source ${String(lesson.sourceKind).slice(0, 40)}` };
+  }
+}
+
+// The description of one lesson, read from that lesson's own page.
+//
+// The classroom tree carries `desc` only for the lesson Skool has selected, so
+// the scan sees no description for every other lesson in the course. Reading it
+// from the scan means a course backup saves notes for one lesson and silently
+// none for the rest — no error, no empty file, just absent notes that look like
+// lessons that never had any.
+//
+// Returns null when the page genuinely has no description, and throws only on a
+// transport failure, so a caller can tell "no notes" from "could not check".
+async function fetchLessonDesc(lesson) {
+  const { pageProps } = await fetchPageProps(lesson.lessonUrl);
+  if (!pageProps) return null;
+  const meta = findLessonMeta(pageProps, lesson.lessonId);
+  return typeof meta?.desc === 'string' ? meta.desc : null;
+}
+
+// The embed resolvers take a platform id, not a URL, so pull the id back out of
+// the link the course tree gave us. Returning null rather than guessing is the
+// point: a wrong id resolves to someone else's video, which is far worse than a
+// named skip.
+function embedSourceId(platform, url) {
+  const s = String(url || '');
+  let m;
+  if (platform === SOURCE.LOOM) { m = /(?:share|embed)\/([0-9a-f]{20,})/i.exec(s); return m ? m[1] : null; }
+  if (platform === SOURCE.VIMEO) { m = /vimeo\.com\/(?:video\/)?(\d{6,})/i.exec(s); return m ? m[1] : null; }
+  if (platform === SOURCE.WISTIA) { m = /(?:medias|iframe)\/([A-Za-z0-9]{8,})/i.exec(s); return m ? m[1] : null; }
+  return null;
+}
+
+// ── Asset writers ─────────────────────────────────────────────────────────────
+// Everything here is small: notes, an attachment, a pointer file. The videos go
+// through the download queue instead.
+//
+// Every writer WAITS for the download to reach 'complete' before returning. The
+// caller records the asset in the manifest the moment the writer resolves, and a
+// manifest entry means "this is on disk, never fetch it again" — so returning on
+// the download id alone would record a file that a disk-full or interrupted save
+// never actually wrote, and no later run would ever retry it.
+
+// A small text file goes to disk as a data URL: a service worker has no
+// URL.createObjectURL, and these are kilobytes.
+function textDataUrl(text, mime) {
+  // UTF-8 safe (btoa alone chokes on non-Latin1), and chunked so
+  // String.fromCharCode never sees an argument list it cannot take.
+  const bytes = new TextEncoder().encode(text);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return `data:${mime};base64,${btoa(bin)}`;
+}
+
+// Promise form with an explicit lastError check: chrome.downloads.download
+// reports a refused download through lastError, and reading it is what stops a
+// refusal being mistaken for a successful save.
+function startDownload(options) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download(options, (id) => {
+      if (chrome.runtime.lastError || id === undefined) {
+        reject(new BulkError('save-failed', chrome.runtime.lastError?.message || 'download rejected'));
+      } else resolve(id);
+    });
+  });
+}
+
+// 'overwrite', not 'uniquify'. Paths are already unique within a run (see
+// bulkLessonBase), so a conflict here means a file from an earlier run — and we
+// only reach this line when the manifest says that asset is NOT settled, i.e.
+// the earlier file is missing or stale. Uniquify would leave the stale copy and
+// quietly accumulate "notes (1).md", "notes (2).md" beside it, while the
+// manifest recorded the path we asked for rather than the one Chrome wrote.
+const BULK_CONFLICT_ACTION = 'overwrite';
+
+async function saveTextFile(path, text, mime) {
+  const downloadId = await startDownload({
+    url: textDataUrl(text, mime),
+    filename: path,
+    conflictAction: BULK_CONFLICT_ACTION,
+    saveAs: false,
+  });
+  const { state, error } = await waitForDownloadEnd(downloadId);
+  if (state !== 'complete') throw new BulkError('save-failed', saveFailureMessage(state, error));
+  return downloadId;
+}
+
+// Mint a signed URL for one attachment. 403 and 423 both mean the account cannot
+// have this file right now.
+//
+// That is recorded as a skip, not a failure — but it deliberately does NOT
+// settle (see SETTLED_SKIP_KINDS): 423 is Locked, and both it and 403 can turn
+// into a granted file once the user's access changes. Retrying one attachment on
+// a later run costs one request; settling it wrongly costs the file for good.
+async function fetchAttachmentUrl(fileId) {
+  if (!FILE_ID_RE.test(fileId)) throw new BulkError('attachment-forbidden', 'Malformed attachment id.');
+  const res = await bulkFetch(`https://api2.skool.com/files/${fileId}/download-url?expire=28800`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
+  if (res.status === 403 || res.status === 423) {
+    throw new BulkError('attachment-forbidden', `This attachment is not available to your account (${res.status}).`);
+  }
+  if (!res.ok) throw new BulkError('network', `Attachment link failed (${res.status}).`);
+
+  const body = (await res.text()).trim();
+  // The endpoint answers with the bare URL, but a JSON envelope is the obvious
+  // way for it to change, and quietly downloading "{"url":..." as a filename is
+  // worse than either. Accept both shapes, and put what did arrive in the error
+  // when it is neither — otherwise the report says only "could not be read".
+  let url = body;
+  if (body.startsWith('{') || body.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(body);
+      url = typeof parsed === 'string' ? parsed : (parsed?.url || parsed?.downloadUrl || '');
+    } catch { url = ''; }
+  }
+  if (!/^https:\/\/\S+$/i.test(url)) {
+    throw new BulkError('network', `The attachment link could not be read (got ${JSON.stringify(body.slice(0, 60))}).`);
+  }
+  return url;
+}
+
+async function saveAttachment(fileId, path) {
+  const url = await fetchAttachmentUrl(fileId);
+  const downloadId = await startDownload({
+    url, filename: path, conflictAction: BULK_CONFLICT_ACTION, saveAs: false,
+  });
+  const { state, error } = await waitForDownloadEnd(downloadId);
+  if (state !== 'complete') throw new BulkError('save-failed', saveFailureMessage(state, error));
+  return downloadId;
+}
+
+// A YouTube-hosted lesson cannot be downloaded in the browser, so record where it
+// lives instead of failing. Windows opens a .url file directly; elsewhere it is
+// still readable text naming the URL.
+function youtubeShortcut(url) {
+  return `[InternetShortcut]\r\nURL=${url}\r\n`;
+}
+
+function saveYoutubeStub(base, url) {
+  return saveTextFile(`${base}.url`, youtubeShortcut(url), 'text/plain');
+}
+
+// ── Manifest store (G1/G2) ────────────────────────────────────────────────────
+// storage.local, so the record of completed work survives a browser restart. The
+// live progress lives in storage.session and is disposable; this is not.
+
+function manifestKey(group, courseSlug) { return `bulk:${group}/${courseSlug}`; }
+
+// Always returns a usable shape. A record that survived a partial write, or an
+// older layout, must not crash every later read — the manifest IS the record of
+// completed work, and a throw here would look like "nothing was ever saved".
+function normalizeManifest(m) {
+  const lessons = (m && typeof m === 'object' && m.lessons && typeof m.lessons === 'object') ? m.lessons : {};
+  return { ...(m && typeof m === 'object' ? m : {}), lessons };
+}
+
+async function loadManifest(group, courseSlug) {
+  const key = manifestKey(group, courseSlug);
+  try {
+    const got = await chrome.storage.local.get(key);
+    return normalizeManifest(got[key]);
+  } catch (e) {
+    // Reporting an empty manifest here would re-download the whole course, so
+    // the failure has to be visible rather than absorbed.
+    bulkLog(`manifest read failed for ${courseSlug}: ${String(e.message).slice(0, 80)}`);
+    return { lessons: {} };
+  }
+}
+
+async function saveManifest(group, courseSlug, manifest) {
+  await chrome.storage.local.set({
+    [manifestKey(group, courseSlug)]: { ...normalizeManifest(manifest), updatedAt: Date.now() },
+  });
+}
+
+async function clearManifest(group, courseSlug) {
+  await chrome.storage.local.remove(manifestKey(group, courseSlug));
+}
+
+// Every manifest write is read-modify-write on one storage key, so two
+// overlapping calls both read the same object and the second's set() discards
+// the first's asset. The debug log above was bitten by exactly this, and here it
+// would cost a file the user believes is saved. Chain every write onto the last.
+let manifestChain = Promise.resolve();
+function withManifestWrite(fn) {
+  const run = manifestChain.then(fn, fn);
+  manifestChain = run.then(() => {}, () => {});
+  return run;
+}
+
+// Record one asset immediately. Written per asset rather than per lesson so a run
+// killed mid-lesson does not lose the attachment it just saved.
+function recordAsset(group, courseSlug, lessonId, patch) {
+  return withManifestWrite(async () => {
+    const manifest = await loadManifest(group, courseSlug);
+    const prev = manifest.lessons[lessonId] || { assets: {} };
+    const assets = { ...normalizeAssets(prev) };
+    if (patch.video) assets.video = patch.video;
+    if (patch.notes) assets.notes = patch.notes;
+    if (patch.file) assets.files = { ...assets.files, [patch.file.fileId]: patch.file.slot };
+    manifest.lessons[lessonId] = {
+      ...prev,
+      assets,
+      status: patch.status ?? prev.status ?? null,
+      reason: patch.reason ?? prev.reason ?? null,
+    };
+    await saveManifest(group, courseSlug, manifest);
+  });
+}
+
+// Drop manifest entries whose file the user has since deleted, so a resume redoes
+// them. Three cases, and the third is the one that matters:
+//
+//   record found, exists true  → the file is there, skip it
+//   record found, exists false → the user deleted it, redo that asset
+//   no record at all           → the download history was cleared. That is
+//                                UNKNOWN, not missing. Trust the manifest.
+//
+// Getting the third wrong turns "I cleared my downloads list" into a full
+// re-download of a multi-gigabyte course. Reading `exists` any other way is
+// meaningless: the browser does not watch for file removal, and calling search()
+// is what triggers the check.
+async function pruneDeletedAssets(group, courseSlug) {
+  const manifest = await loadManifest(group, courseSlug);
+  const ids = [];
+  for (const rec of Object.values(manifest.lessons)) {
+    const a = normalizeAssets(rec);
+    for (const slot of [a.video, a.notes, ...Object.values(a.files)]) {
+      if (slot && typeof slot.downloadId === 'number') ids.push(slot.downloadId);
+    }
+  }
+  if (!ids.length) return manifest;
+
+  const missing = new Set();
+  let unknown = 0, failed = 0;
+  for (const id of ids) {
+    let items = [];
+    try { items = await chrome.downloads.search({ id }); }
+    catch { failed++; continue; }               // a failed check is not a deletion
+    if (!items.length) { unknown++; continue; } // history cleared — trust the manifest
+    if (items[0].exists === false) missing.add(id);
+  }
+
+  // Always logged, never conditionally: "it re-downloaded everything" and "it
+  // skipped everything" are both explained by these counts, and a silent check
+  // is indistinguishable from one that never ran.
+  //
+  // Measured 2026-08-04: Chrome does not revalidate DownloadItem.exists for
+  // files removed outside the browser. Deleting three saved files and re-running
+  // reported 0 deleted, and calling search() — which the API docs say triggers
+  // an existence check — produced no onChanged and no change after 12 seconds,
+  // in a freshly started browser. So this check finds a deleted file only when
+  // Chrome has already noticed one, which in practice is rarely. It is kept
+  // because a true `exists: false` is still worth acting on, but nothing may
+  // promise the user that deleting a file gets it back: "Re-download everything"
+  // is the path that actually works.
+  bulkLog(`disk check: ${ids.length} recorded, ${missing.size} deleted, ${unknown} not in history, ${failed} unreadable`);
+  if (!missing.size) return manifest;
+
+  const drop = slot => (slot && missing.has(slot.downloadId)) ? null : slot;
+  for (const [lessonId, rec] of Object.entries(manifest.lessons)) {
+    const a = normalizeAssets(rec);
+    const files = {};
+    for (const [fid, slot] of Object.entries(a.files)) { const kept = drop(slot); if (kept) files[fid] = kept; }
+    manifest.lessons[lessonId] = { ...rec, assets: { video: drop(a.video), notes: drop(a.notes), files } };
+  }
+  await withManifestWrite(() => saveManifest(group, courseSlug, manifest));
+  return manifest;
+}
+
+// ── Run state (G2) ────────────────────────────────────────────────────────────
+// Live progress only. It is fine to lose this — resumability is rebuilt from the
+// manifest, never from here, which is what lets a run survive a browser restart.
+
+const BULK_STATE_KEY = 'bulk_run';
+let bulkAbort = { pause: false, cancel: false };
+// The queue job the run is currently waiting on, or null. A course run holds at
+// most one at a time, and CANCEL_BULK needs it to stop a download mid-file.
+let bulkCurrentJobId = null;
+
+async function getBulkState() {
+  const got = await chrome.storage.session.get(BULK_STATE_KEY);
+  return got[BULK_STATE_KEY] || null;
+}
+async function setBulkState(patch) {
+  const prev = await getBulkState();
+  const next = { ...(prev || {}), ...patch };
+  await chrome.storage.session.set({ [BULK_STATE_KEY]: next });
+  bulkBroadcast({ type: 'BULK_STATE', state: next });
+  return next;
+}
+function bulkBroadcast(msg) { chrome.runtime.sendMessage(msg).catch(() => {}); }
+
+// A run marked active with no orchestrator behind it is an interrupted run, not a
+// live one. Called on worker startup so the popup can never show a progress bar
+// that will not move again.
+async function reconcileBulkStateOnStartup() {
+  const state = await getBulkState();
+  if (state && state.phase === 'running') {
+    await setBulkState({ phase: 'interrupted' });
+    // The user sees "interrupted" and can press Resume; the report needs to know
+    // the worker died mid-run, which is otherwise indistinguishable from a run
+    // that was never started.
+    bulkLog(`run interrupted by a worker restart at ${state.done || 0}/${state.total || 0}`);
+  }
+}
+reconcileBulkStateOnStartup();
+
+// ── Orchestrator ──────────────────────────────────────────────────────────────
+
+// Starting and resuming are the same operation. Because the skip decision is
+// derived from the manifest rather than from a stored work list, "resume" is just
+// "run again" — which is also why a resume picks up lessons the instructor added
+// while the run was paused. There is deliberately no separate resume path to keep
+// in sync.
+async function runBulkCourse({ group, courseSlug, want }) {
+  bulkAbort = { pause: false, cancel: false };
+  const wanted = { video: !!want?.video, notes: !!want?.notes, files: !!want?.files };
+
+  // Suppresses the per-download success line for the whole run. Cleared in the
+  // finally below, including when the scan throws — leaving it set would silence
+  // ordinary downloads for the rest of the browser session.
+  bulkRunActive = true;
+  try {
+    return await runBulkCourseInner({ group, courseSlug, want: wanted });
+  } catch (e) {
+    // scanCourse already logged what it saw; this names the run that died and is
+    // the only line saying a run ended without ever reaching its end line.
+    bulkLog(`run aborted: ${e instanceof BulkError ? e.code : 'error'} — ${String(e.message).slice(0, 120)}`);
+    await setBulkState({ phase: 'error', error: e.message });
+    throw e;
+  } finally {
+    bulkRunActive = false;
+    // A lesson that threw mid-download would otherwise leave a stale id here,
+    // and the next cancel would kill an unrelated download.
+    bulkCurrentJobId = null;
+  }
+}
+
+async function runBulkCourseInner({ group, courseSlug, want }) {
+  // Before the scan, not after: the scan is part of the run, and a log claiming
+  // a 9-lesson backup took five milliseconds is not a log anyone can trust.
+  const runStartedAt = Date.now();
+  const scan = await scanCourse(group, courseSlug);
+  // Prune before every run, not only on resume: a plain second run over the same
+  // course is exactly when a user who deleted files expects them back.
+  const manifest = await pruneDeletedAssets(group, courseSlug);
+  const merged = mergeManifest(manifest, scan.lessons);
+
+  const total = merged.length;
+  const usedBases = new Set();
+  const records = [];
+  // Accumulates every failure reason for the whole run. Flushed to the debug log
+  // once, at the end — see the logging rule.
+  const runTally = reasonTally();
+
+  // The run's fingerprint, logged before any work: which course, what shape, how
+  // much of it, what was asked for, and how much a previous run had already
+  // finished. Almost every report is unanswerable without this line, and it is
+  // the one a per-lesson log would evict.
+  bulkLog(bulkRunStartLine({
+    courseTitle: scan.courseTitle, shape: scan.shape,
+    moduleCount: scan.moduleCount, lessonCount: total, want,
+    resumed: merged.filter(l => !lessonNeedsWork(l.priorAssets, want, [])).length,
+  }));
+
+  await setBulkState({
+    phase: 'running', group, courseSlug, courseTitle: scan.courseTitle,
+    total, done: 0, currentTitle: null, want, startedAt: runStartedAt,
+  });
+
+  // Reserve every base path up front so numbering and collision handling do not
+  // depend on which lessons happen to be skipped this run.
+  const lessonCountByModule = new Map();
+  for (const l of merged) {
+    const k = l.moduleIdx ?? 'root';
+    lessonCountByModule.set(k, (lessonCountByModule.get(k) || 0) + 1);
+  }
+  // Most real courses give every module exactly one lesson. Keeping the module
+  // folders there produces one folder per file, named after the file inside it.
+  const flatten = shouldFlattenModules(merged);
+  let ordinal = 0;
+  for (const l of merged) {
+    ordinal++;
+    l.base = bulkLessonBase(flatten
+      // Numbered across the whole course, since the module order that used to
+      // carry the sequence is no longer in the path.
+      //
+      // Named after the module, not the lesson: the module title is what the
+      // classroom sidebar shows and what the user recognises, and where a module
+      // holds one lesson that lesson is very often called something generic like
+      // "All files" or "New page". Dropping the folder must not drop the only
+      // name that identified the thing.
+      ? { courseTitle: scan.courseTitle, moduleIdx: null, moduleTitle: null, moduleCount: 0,
+          lessonIdx: ordinal, lessonTitle: l.moduleTitle || l.title, lessonCount: merged.length }
+      : { courseTitle: scan.courseTitle,
+          moduleIdx: l.moduleIdx, moduleTitle: l.moduleTitle, moduleCount: scan.moduleCount,
+          lessonIdx: l.lessonIdx, lessonTitle: l.title,
+          lessonCount: lessonCountByModule.get(l.moduleIdx ?? 'root') || 1 },
+      usedBases);
+  }
+
+  const youtubeIndex = [];
+  let done = 0;
+
+  for (const lesson of merged) {
+    if (bulkAbort.cancel) break;
+    if (bulkAbort.pause) {
+      await setBulkState({ phase: 'paused', done });
+      // A paused run never reaches the end line, so without this a report shows
+      // a start line and nothing else, which reads exactly like a run that hung.
+      bulkLog(`paused at ${done}/${total}`);
+      return { paused: true };
+    }
+
+    const resources = parseResources(lesson.resourcesRaw);
+    const wantedFileIds = resources.files.map(f => f.fileId);
+    // A resource list that parsed to nothing usable is worth knowing about: the
+    // lesson looks attachment-free and no failure is ever recorded for it.
+    if (resources.dropped) tallyReason(runTally, 'resources-unreadable', `lesson "${String(lesson.title).slice(0, 40)}": ${resources.dropped} entr(ies) dropped`);
+
+    if (!lessonNeedsWork(lesson.priorAssets, want, wantedFileIds)) {
+      done++;
+      records.push({
+        status: lesson.priorStatus === 'skipped' ? 'skipped' : 'saved',
+        reason: lesson.priorAssets.video?.skipped || null,
+        title: lesson.title,
+      });
+      await setBulkState({ done, currentTitle: lesson.title, phase: 'running', lastLine: 'already saved — skipping' });
+      continue;
+    }
+
+    await setBulkState({ done, currentTitle: lesson.title, phase: 'running', lastLine: 'resolving…' });
+
+    // One lesson can never abort the course. Anything unhandled here becomes a
+    // named failure on that lesson and the run continues.
+    let record = { status: 'failed', reason: 'network' };
+    try {
+      record = await runBulkLesson({ group, courseSlug, lesson, want, resources, youtubeIndex, runTally });
+    } catch (e) {
+      record = { status: 'failed', reason: e instanceof BulkError ? e.code : 'network' };
+      // Tallied, not logged: see the logging rule. One line per failing lesson
+      // would push this run's start line out of the user's report.
+      tallyReason(runTally, record.reason, `lesson "${String(lesson.title).slice(0, 60)}": ${e.message}`);
+      await recordAsset(group, courseSlug, lesson.lessonId, { status: 'failed', reason: record.reason });
+    }
+
+    records.push({ ...record, title: lesson.title });
+    done++;
+    await setBulkState({ done, currentTitle: lesson.title, phase: 'running' });
+  }
+
+  const course = capSegment(scan.courseTitle, 100, 'skool-course');
+  if (youtubeIndex.length) {
+    try {
+      await saveTextFile(`${course}/_youtube-lessons.txt`,
+        youtubeIndex.map(y => `${y.title}\n${y.url}\n`).join('\n'), 'text/plain');
+    } catch (e) {
+      // Swallowing this would lose the only record of every YouTube lesson in the
+      // course. The per-lesson .url stubs still exist, so it is not fatal.
+      tallyReason(runTally, 'youtube-index', `index of ${youtubeIndex.length} lesson(s): ${e.message}`);
+    }
+  }
+
+  const summary = runSummary(records);
+  const cancelled = bulkAbort.cancel;
+
+  // Two or three lines, whatever the course size: the counts, then the reasons
+  // ranked by how many lessons each cost, then one worked example of each so a
+  // reason like 'network' is not just a word. Logged even on a clean run — a
+  // report that says "done 40les: 40 saved" answers its own question.
+  bulkLog(`${bulkRunEndLine(summary)}${cancelled ? ' (cancelled)' : ''}`);
+  // Skips already break out by reason in the end line above, so the tally is for
+  // failures — plus anything tallied that never became a lesson-level failure at
+  // all (an unreadable resource list, a missing YouTube index), which would
+  // otherwise leave no trace anywhere.
+  const tallied = describeTally(runTally);
+  const examples = tallyExamples(runTally);
+  if (tallied !== 'none') {
+    bulkLog(`fail reasons: ${tallied}`);
+    if (examples) bulkLog(`e.g. ${examples}`);
+  }
+
+  // A per-lesson log in the course folder. The debug log a report carries is ten
+  // lines for the whole browser session, which cannot describe a 40-lesson run —
+  // and "it missed a section" is unanswerable without knowing what the run
+  // decided for each lesson. Written from the manifest, so it describes what is
+  // actually on disk rather than what this run happened to touch.
+  try {
+    await saveTextFile(`${course}/_download-log.txt`, runLogDocument({
+      courseTitle: scan.courseTitle, group, courseSlug,
+      version: chrome.runtime.getManifest().version,
+      // Which browser build produced this: merge failures and save failures are
+      // both version- and platform-specific, and the report cannot carry it.
+      userAgent: (typeof navigator !== 'undefined' && navigator.userAgent) || 'unknown',
+      startedAt: runStartedAt, finishedAt: Date.now(), want,
+      lessons: merged, manifest: await loadManifest(group, courseSlug),
+      summary, reasons: tallied, examples, cancelled,
+    }), 'text/plain');
+  } catch (e) {
+    // Never fatal: the run's real output is already on disk. But a run that
+    // could not write its own log is worth one line, because the next question
+    // asked will be "where is the log".
+    bulkLog(`run log not written: ${String(e.message).slice(0, 100)}`);
+  }
+
+  await setBulkState({ phase: cancelled ? 'cancelled' : 'completed', done, summary });
+  bulkBroadcast({ type: 'BULK_DONE', cancelled, summary, courseTitle: scan.courseTitle,
+    failedDetail: records.filter(r => r.status === 'failed').map(r => ({ title: r.title, reason: r.reason })) });
+  return { summary, cancelled };
+}
+
+// One lesson: video, then notes, then attachments. Each asset is recorded the
+// moment it lands.
+async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtubeIndex, runTally }) {
+  const base = lesson.base;
+  let status = 'saved', reason = null;
+  // A description picked up while resolving the video, so the notes step below
+  // does not fetch the same page a second time.
+  let resolvedDesc = null;
+
+  if (want.video && !isSettled(lesson.priorAssets.video)) {
+    const resolved = await resolveBulkLesson(lesson);
+
+    if (resolved.kind === 'skip') {
+      // Kinds that can never succeed settle so they are not retried forever;
+      // 'locked' stays open, because access can change.
+      const settle = SETTLED_SKIP_KINDS.includes(resolved.reason);
+      await recordAsset(group, courseSlug, lesson.lessonId, {
+        status: 'skipped', reason: resolved.reason,
+        video: settle ? { skipped: resolved.reason } : undefined,
+      });
+      // The reason alone is a word; resolveBulkLesson's detail is the worked
+      // example that makes it actionable in a report.
+      tallyReason(runTally, resolved.reason, resolved.detail || `lesson "${String(lesson.title).slice(0, 60)}"`);
+      status = 'skipped'; reason = resolved.reason;
+
+    } else if (resolved.kind === 'link') {
+      youtubeIndex.push({ title: lesson.title, url: resolved.url });
+      await saveYoutubeStub(base, resolved.url);
+      await recordAsset(group, courseSlug, lesson.lessonId, {
+        status: 'skipped', reason: 'youtube', video: { skipped: 'youtube' },
+      });
+      status = 'skipped'; reason = 'youtube';
+
+    } else if (resolved.kind === 'notes-only') {
+      await recordAsset(group, courseSlug, lesson.lessonId, { video: { skipped: 'text' } });
+
+    } else {
+      resolvedDesc = resolved.desc ?? null;
+      const quality = pickBestQuality(resolved.qualities);
+      await setBulkState({ lastLine: 'downloading video…' });
+      const out = await enqueueDownloadAwaited({
+        // The STEM, with no extension: runJob appends .mp4 itself, so passing
+        // "<base>.mp4" here writes "<base>.mp4.mp4".
+        quality, filename: base,
+        // tabId null: chrome.tabs.onRemoved cancels active jobs by matching
+        // meta.tabId, and a headless course run must not die with a tab.
+        //
+        // mode is deliberately omitted rather than set to a bulk-specific value.
+        // The queue reads it as "single-rendition, free" — a truthy unknown value
+        // silently skips the pre-merge SIMD check (background.js, runJob), which
+        // is the guard that turns an unsupported CPU into a clear message instead
+        // of a failure deep inside ffmpeg. decrementCredit already no-ops for the
+        // paid tiers this feature requires, so omitting it costs nothing.
+        tabId: null, platform: resolved.platform, label: lesson.title,
+        onJobId: (id) => { bulkCurrentJobId = id; },
+      });
+      bulkCurrentJobId = null;
+      if (out.ok) {
+        await recordAsset(group, courseSlug, lesson.lessonId, {
+          status: 'saved', video: { path: `${base}.mp4`, downloadId: out.downloadId, savedAt: Date.now() },
+        });
+      } else if (out.cancelled) {
+        return { status: 'failed', reason: 'cancelled' };
+      } else {
+        await recordAsset(group, courseSlug, lesson.lessonId, { status: 'failed', reason: 'download' });
+        tallyReason(runTally, 'download', `lesson "${String(lesson.title).slice(0, 60)}": ${out.error || 'download failed'}`);
+        status = 'failed'; reason = 'download';
+      }
+    }
+  }
+
+  if (bulkAbort.pause || bulkAbort.cancel) return { status, reason };
+
+  if (want.notes && !isSettled(lesson.priorAssets.notes)) {
+    // The scan's copy is only trustworthy when it is non-empty: the classroom
+    // tree omits `desc` for every lesson except the selected one, so an absent
+    // description there means "not included", not "none". Fetching the lesson's
+    // own page is the only way to tell those apart.
+    let descRaw = lesson.descRaw || resolvedDesc;
+    if (!descRaw) {
+      try {
+        descRaw = await fetchLessonDesc(lesson);
+      } catch (e) {
+        // Not a lesson-level failure — the video and attachments may well have
+        // saved. Tallied so a run that lost notes says so somewhere.
+        tallyReason(runTally, 'notes-unreachable', `lesson "${String(lesson.title).slice(0, 40)}": ${e.message}`);
+      }
+    }
+    const markdown = descToMarkdown(descRaw);
+    if (markdown || resources.links.length) {
+      const doc = notesDocument({ title: lesson.title, lessonUrl: lesson.lessonUrl, markdown, links: resources.links });
+      const id = await saveTextFile(`${base}.md`, doc, 'text/markdown');
+      await recordAsset(group, courseSlug, lesson.lessonId, { notes: { path: `${base}.md`, downloadId: id, savedAt: Date.now() } });
+    } else {
+      await recordAsset(group, courseSlug, lesson.lessonId, { notes: { skipped: 'none' } });
+    }
+  }
+
+  if (want.files) {
+    // Two attachments on one lesson may share a label; without this set the
+    // second silently overwrites the first. Scoped per lesson, and seeded with
+    // what a previous run already wrote: a settled attachment is skipped below,
+    // so without seeding a resume would hand its name to the next same-labelled
+    // file and overwrite it on disk.
+    // Seeded with the filesystem's idea of each name, matching how claimUnique
+    // stores them — seeding raw paths would leave a previously written file
+    // invisible to the collision check and let this run overwrite it.
+    const usedAttachmentNames = new Set(
+      Object.values(lesson.priorAssets.files || {}).map(s => s?.path).filter(Boolean).map(fsKey));
+    for (const file of resources.files) {
+      if (bulkAbort.cancel) break;
+      if (isSettled(lesson.priorAssets.files[file.fileId])) continue;
+      const path = attachmentFilename(base, file, usedAttachmentNames);
+      try {
+        await setBulkState({ lastLine: `attachment: ${file.label}` });
+        const id = await saveAttachment(file.fileId, path);
+        await recordAsset(group, courseSlug, lesson.lessonId, { file: { fileId: file.fileId, slot: { path, downloadId: id, savedAt: Date.now() } } });
+      } catch (e) {
+        const code = e instanceof BulkError ? e.code : 'network';
+        // Forbidden is recorded as a skip, but deliberately does not settle:
+        // 403/423 can become a granted file when the user's access changes.
+        await recordAsset(group, courseSlug, lesson.lessonId, {
+          file: { fileId: file.fileId, slot: code === 'attachment-forbidden' ? { skipped: code } : null },
+        });
+        // Tallied under its own reason key so an attachment problem is never
+        // mistaken for the lesson's video failing.
+        tallyReason(runTally, `attachment-${code}`, `attachment "${String(file.label).slice(0, 40)}": ${e.message}`);
+      }
+    }
+  }
+
+  return { status, reason };
+}
+
+// Highest resolution available, matching what a user picking manually would want
+// from a course backup.
+function pickBestQuality(qualities) {
+  return [...qualities].sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+}

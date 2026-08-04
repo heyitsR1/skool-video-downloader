@@ -1,0 +1,11 @@
+{
+  "renderData": {
+    "course": {
+      "course": { "id": "c0", "metadata": { "title": "Drifted Course" } },
+      "children": [
+        { "lessonNode": { "identifier": "l1", "props": { "name": "Renamed Shape" } } },
+        { "lessonNode": { "identifier": "l2", "props": { "name": "Also Renamed" } } }
+      ]
+    }
+  }
+}

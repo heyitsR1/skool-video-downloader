@@ -14,6 +14,30 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.0 — 2026-08-04
+
+### Added
+- **Download an entire course (Beta).** Back up every lesson you already have access to
+  in one run — videos, lesson notes as Markdown, and attached files — organised
+  into a folder per course and module.
+- Runs in the background: close the popup, keep browsing, come back to a summary.
+- Pause and resume any time, including after restarting your browser. Finished
+  lessons are never downloaded twice. To fetch a course again from scratch — for
+  instance after deleting some of it — use **Re-download everything**; Chrome
+  does not tell an extension that a saved file was removed, so a normal re-run
+  cannot notice on its own.
+- Lessons your account cannot open yet are skipped and listed when the run
+  finishes, so you always know exactly what you got.
+- Marked Beta while it is exercised against more course layouts. It is a Pro
+  feature and is listed as one in the upgrade window.
+- Courses whose modules each hold a single lesson are saved as a flat list
+  rather than a folder per file, named after the module you clicked.
+- YouTube-hosted lessons are collected into `_youtube-lessons.txt` for the
+  download guide, since they cannot be saved in the browser.
+- Every run writes `_download-log.txt` in the course folder, listing each lesson
+  and what was saved, skipped or failed for it — including lessons that produced
+  no file. Send it with a problem report if something looks missing.
+
 ## 1.4.0 — 2026-08-01
 
 ### Removed

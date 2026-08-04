@@ -13,7 +13,15 @@
         <span class="logo__mark"><img src="icons/icon48.png" alt="" width="24" height="24"></span>
         <span class="logo__text">Skool Video Downloader</span>
       </span>
-      <span id="tier-badge" class="badge badge--free" data-i18n="badgeFree">Free</span>
+      <span class="header__meta">
+        <span id="tier-badge" class="badge badge--free" data-i18n="badgeFree">Free</span>
+        <!-- Top right, not buried in the footer. When a download fails the report
+             is the only thing that tells us why, and a link nobody sees is a
+             failure nobody hears about. -->
+        <button id="header-report" class="report-chip" data-i18n-title="footerReport" title="Report a problem">
+          <span aria-hidden="true">🚩</span> <span data-i18n="reportChip">Report</span>
+        </button>
+      </span>
     </div>
 
     <!-- Update banner (hidden unless this channel is behind; dismiss per version) -->
@@ -40,6 +48,58 @@
 
     <!-- Detected videos -->
     <div id="videos" class="videos hidden"></div>
+
+    <!-- Whole-course backup. Shown only on a classroom course page; the panel is
+         a view over background state, so closing the popup never stops a run. -->
+    <section id="bulk" class="bulk hidden">
+      <div class="bulk__head">
+        <span class="bulk__label" data-i18n="bulkPanelTitle">Course backup</span>
+        <span class="bulk__beta" data-i18n="bulkBeta">Beta</span>
+      </div>
+      <div id="bulk-idle" class="hidden">
+        <div class="bulk__course" id="bulk-course-title"></div>
+        <div class="bulk__meta" id="bulk-course-meta"></div>
+        <p class="bulk__note" data-i18n="bulkLockedNote">Lessons your account cannot open yet are skipped, and listed when the run finishes.</p>
+        <label class="bulk__opt"><input type="checkbox" id="bulk-want-video" checked> <span data-i18n="bulkWantVideo">Videos</span></label>
+        <label class="bulk__opt"><input type="checkbox" id="bulk-want-notes" checked> <span data-i18n="bulkWantNotes">Lesson notes</span></label>
+        <label class="bulk__opt"><input type="checkbox" id="bulk-want-files" checked> <span data-i18n="bulkWantFiles">Attachments</span></label>
+        <button id="bulk-start" class="btn btn--primary" data-i18n="bulkDownloadCourse">Download entire course</button>
+        <p class="bulk__pro hidden" id="bulk-pro-note" data-i18n="bulkProNote">Full-course backup is a Pro feature.</p>
+      </div>
+
+      <div id="bulk-resume" class="hidden">
+        <div class="bulk__course" id="bulk-resume-title"></div>
+        <div class="bulk__meta" id="bulk-resume-meta"></div>
+        <button id="bulk-resume-go" class="btn btn--primary" data-i18n="bulkResumeGo">Resume course download</button>
+        <button id="bulk-restart" class="btn btn--soft" data-i18n="bulkRestart">Re-download everything</button>
+      </div>
+
+      <div id="bulk-running" class="hidden">
+        <div class="bulk__course" id="bulk-run-title"></div>
+        <div class="bulk__bar"><div class="bulk__bar-fill" id="bulk-bar-fill"></div></div>
+        <div class="bulk__meta"><span id="bulk-count"></span> <span id="bulk-current"></span></div>
+        <div class="bulk__line" id="bulk-line"></div>
+        <div class="btn-row">
+          <button id="bulk-pause" class="btn btn--soft" data-i18n="bulkPause">Pause</button>
+          <button id="bulk-cancel" class="btn btn--soft" data-i18n="bulkCancel">Cancel</button>
+        </div>
+      </div>
+
+      <div id="bulk-paused" class="hidden">
+        <div class="bulk__course" id="bulk-paused-title"></div>
+        <div class="bulk__meta" id="bulk-paused-meta"></div>
+        <p class="bulk__note" data-i18n="bulkPausedNote">Your progress is saved. You can close this popup or restart your browser.</p>
+        <button id="bulk-unpause" class="btn btn--primary" data-i18n="bulkResumeRun">Resume</button>
+        <button id="bulk-cancel-2" class="btn btn--soft" data-i18n="bulkCancel">Cancel</button>
+      </div>
+
+      <div id="bulk-done" class="hidden">
+        <div class="bulk__meta" id="bulk-summary"></div>
+        <ul class="bulk__detail" id="bulk-detail"></ul>
+        <button id="bulk-again" class="btn btn--soft" data-i18n="bulkAgain">Back</button>
+        <button id="bulk-restart-done" class="btn btn--soft" data-i18n="bulkRestart">Re-download everything</button>
+      </div>
+    </section>
 
     <!-- Quality picker (opened for a chosen video) -->
     <div id="quality-view" class="quality-view hidden">
@@ -134,8 +194,9 @@
         <textarea id="report-note" class="input input--area" maxlength="300" data-i18n-placeholder="reportNotePlaceholder" placeholder="e.g. The Loom video on this lesson never finishes downloading"></textarea>
       </div>
       <div class="section">
-        <label class="label" for="report-email"><span data-i18n="reportEmailLabel">Email for a follow-up</span> <span class="label--muted" data-i18n="reportOptional">(optional)</span></label>
+        <label class="label" for="report-email"><span data-i18n="reportEmailLabel">Your email</span> <span class="label--muted" data-i18n="reportOptional">(optional)</span></label>
         <input type="email" id="report-email" class="input" data-i18n-placeholder="reportEmailPlaceholder" placeholder="you@example.com">
+        <p class="report-why" data-i18n="reportEmailWhy">So we can tell you once it's fixed. Nothing else is ever sent here.</p>
       </div>
       <button id="report-send" class="btn btn--outline" data-i18n="reportSendBtn">Send report</button>
       <div id="report-msg" class="msg"></div>
@@ -161,6 +222,7 @@
         </div>
         <ul class="plan-card__list">
           <li data-i18n="planFeatureUnlimited">Unlimited downloads — no weekly cap</li>
+          <li><span data-i18n="planFeatureBulk">Back up a whole course in one run — videos, notes &amp; files</span> <span class="plan-card__beta" data-i18n="bulkBeta">Beta</span></li>
           <li data-i18n="planFeatureResolution">Every resolution the source offers</li>
           <li data-i18n="planFeaturePlatforms">Skool, Loom, Vimeo, YouTube &amp; Wistia</li>
           <li data-i18n="planFeatureSupport">Priority email support</li>
