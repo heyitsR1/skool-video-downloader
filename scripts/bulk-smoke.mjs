@@ -442,5 +442,97 @@ console.log('\nparseResources');
     bulk.parseResources(JSON.stringify([{ title: 'A\tB', file_id: 'd'.repeat(32) }])).files[0].label, 'A B');
 }
 
+console.log('\nmanifest / resume (G1)');
+{
+  const saved = { video: { path: 'C/01 A.mp4', downloadId: 7 }, notes: { path: 'C/01 A.md' }, files: {} };
+
+  check('everything wanted is present → skip',
+    bulk.lessonNeedsWork(saved, { video: true, notes: true, files: true }, []), false);
+  check('video missing → work',
+    bulk.lessonNeedsWork({ ...saved, video: null }, { video: true, notes: false, files: false }, []), true);
+  check('video missing but not wanted → skip',
+    bulk.lessonNeedsWork({ ...saved, video: null }, { video: false, notes: true, files: false }, []), false);
+
+  // …and the mirror of it: a video-only pass must not satisfy a later notes run.
+  check('missing notes alone is enough work',
+    bulk.lessonNeedsWork({ video: { path: 'v' }, notes: null, files: {} }, { video: true, notes: true, files: false }, []), true);
+  check('missing notes that are not wanted is not',
+    bulk.lessonNeedsWork({ video: { path: 'v' }, notes: null, files: {} }, { video: true, notes: false, files: false }, []), false);
+
+  // The rule that matters: a notes-only pass must never satisfy a later full run.
+  check('notes-only history does not satisfy a video run',
+    bulk.lessonNeedsWork({ video: null, notes: { path: 'x.md' }, files: {} }, { video: true, notes: true, files: false }, []), true);
+
+  // Attachments are tracked per file, so one 423 retries only itself.
+  const partial = { video: { path: 'v' }, notes: { path: 'n' }, files: { ['a'.repeat(32)]: { path: 'f1' } } };
+  check('all wanted files present → skip',
+    bulk.lessonNeedsWork(partial, { video: true, notes: true, files: true }, ['a'.repeat(32)]), false);
+  check('one missing file → work',
+    bulk.lessonNeedsWork(partial, { video: true, notes: true, files: true }, ['a'.repeat(32), 'b'.repeat(32)]), true);
+
+  // Permanently unsatisfiable assets settle, so they are not retried forever.
+  check('a YouTube-hosted lesson settles',
+    bulk.lessonNeedsWork({ video: { skipped: 'youtube' }, notes: { path: 'n' }, files: {} }, { video: true, notes: true, files: false }, []), false);
+  check('a text-only lesson settles',
+    bulk.lessonNeedsWork({ video: { skipped: 'text' }, notes: { path: 'n' }, files: {} }, { video: true, notes: true, files: false }, []), false);
+  // A locked lesson does not settle — access can change.
+  check('a locked lesson stays retryable',
+    bulk.lessonNeedsWork({ video: null, notes: { path: 'n' }, files: {} }, { video: true, notes: true, files: false }, []), true);
+  // …including when a run has actually written the reason down, which is the
+  // only way this can go wrong in practice.
+  check('a recorded locked skip is still retryable',
+    bulk.lessonNeedsWork({ video: { skipped: 'locked' }, notes: { path: 'n' }, files: {} }, { video: true, notes: true, files: false }, []), true);
+  check('an unrecognised skip reason does not settle either',
+    bulk.lessonNeedsWork({ video: { skipped: 'whatever' }, notes: { path: 'n' }, files: {} }, { video: true, notes: true, files: false }, []), true);
+  check('a settled skip on an attachment counts',
+    bulk.lessonNeedsWork({ video: { path: 'v' }, notes: { path: 'n' }, files: { ['a'.repeat(32)]: { skipped: 'unknown' } } },
+      { video: true, notes: true, files: true }, ['a'.repeat(32)]), false);
+  check('a locked skip on an attachment does not',
+    bulk.lessonNeedsWork({ video: { path: 'v' }, notes: { path: 'n' }, files: { ['a'.repeat(32)]: { skipped: 'locked' } } },
+      { video: true, notes: true, files: true }, ['a'.repeat(32)]), true);
+  ok('locked is deliberately not a settling kind', !bulk.SETTLED_SKIP_KINDS.includes('locked'));
+
+  check('a missing record needs everything',
+    bulk.lessonNeedsWork(bulk.normalizeAssets(null), { video: true, notes: true, files: false }, []), true);
+  check('normalizeAssets shape', bulk.normalizeAssets(null), { video: null, notes: null, files: {} });
+  check('normalizeAssets tolerates a record with no assets',
+    bulk.normalizeAssets({ status: 'saved' }), { video: null, notes: null, files: {} });
+
+  console.log('\nmergeManifest');
+  const scanned = [
+    { lessonId: 'l1', title: 'A' },
+    { lessonId: 'l2', title: 'B' },
+  ];
+  const existing = { lessons: { l2: { status: 'saved', assets: { video: { path: 'p' } } } } };
+  const merged = bulk.mergeManifest(existing, scanned);
+  check('unseen lesson gets an empty prior', merged[0].priorAssets, { video: null, notes: null, files: {} });
+  check('known lesson carries its prior', merged[1].priorAssets.video, { path: 'p' });
+  check('prior status carried', merged[1].priorStatus, 'saved');
+
+  // Keyed by lessonId, never by index — instructors reorder courses.
+  const reordered = bulk.mergeManifest(existing, [{ lessonId: 'l2', title: 'B' }, { lessonId: 'l1', title: 'A' }]);
+  check('reordering does not move prior state', reordered[0].priorAssets.video, { path: 'p' });
+  check('and the other lesson stays untouched', reordered[1].priorAssets.video, null);
+
+  check('no existing manifest at all', bulk.mergeManifest(null, scanned).length, 2);
+  check('no scanned lessons at all', bulk.mergeManifest(existing, null), []);
+
+  console.log('\nrunSummary');
+  const summary = bulk.runSummary([
+    { status: 'saved' }, { status: 'saved' },
+    { status: 'skipped', reason: 'locked' }, { status: 'skipped', reason: 'youtube' },
+    { status: 'failed', reason: 'network' },
+  ]);
+  check('counts', { saved: summary.saved, skipped: summary.skipped, failed: summary.failed }, { saved: 2, skipped: 2, failed: 1 });
+  check('counts account for every lesson', summary.saved + summary.skipped + summary.failed, summary.total);
+  check('skip reasons are broken out', summary.skippedByReason, { locked: 1, youtube: 1 });
+  check('failure reasons are broken out too', summary.failedByReason, { network: 1 });
+
+  // A status nobody recognises must land in a bucket, not fall out of the count.
+  const odd = bulk.runSummary([{ status: 'saved' }, { status: 'in-flight' }, null]);
+  check('an unrecognised status still balances', odd.saved + odd.skipped + odd.failed, odd.total);
+  check('empty run', bulk.runSummary([]), { total: 0, saved: 0, skipped: 0, failed: 0, skippedByReason: {}, failedByReason: {} });
+}
+
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : '✓ all assertions hold'}`);
 process.exit(failures ? 1 : 0);

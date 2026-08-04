@@ -468,7 +468,78 @@ function parseResources(raw) {
   return out;
 }
 
-// ── Manifest and resume ───────────────────────────────────────────────────────
+// ── Manifest and resume (G1) ──────────────────────────────────────────────────
+// The manifest is the only record of what is on disk, because the downloads API
+// cannot stat the filesystem. Its one non-negotiable rule: decide from `assets`,
+// never from `status`. A notes-only pass marked 'saved' must never let a later
+// full run skip a lesson and leave the user without a video — that failure is
+// invisible, because the run reports success.
+
+// Kinds that can never be downloaded in-browser, so recording a skip for them is
+// final. 'locked' is deliberately absent: access can change, so a locked lesson
+// stays retryable on a later run — and so does any reason not listed here, since
+// a reason this file does not recognise is not one it can call permanent.
+const SETTLED_SKIP_KINDS = Object.freeze([SOURCE.YOUTUBE, SOURCE.TEXT, SOURCE.UNKNOWN]);
+
+function isSettled(slot) {
+  if (!slot || typeof slot !== 'object') return false;
+  if (typeof slot.path === 'string') return true;
+  return typeof slot.skipped === 'string' && SETTLED_SKIP_KINDS.includes(slot.skipped);
+}
+
+function normalizeAssets(record) {
+  const a = (record && typeof record === 'object' && record.assets && typeof record.assets === 'object')
+    ? record.assets : {};
+  return {
+    video: a.video && typeof a.video === 'object' ? a.video : null,
+    notes: a.notes && typeof a.notes === 'object' ? a.notes : null,
+    files: a.files && typeof a.files === 'object' ? a.files : {},
+  };
+}
+
+function lessonNeedsWork(priorAssets, want, wantedFileIds) {
+  const a = priorAssets && typeof priorAssets === 'object' ? priorAssets : {};
+  const files = a.files && typeof a.files === 'object' ? a.files : {};
+  if (want.video && !isSettled(a.video)) return true;
+  if (want.notes && !isSettled(a.notes)) return true;
+  if (want.files) {
+    for (const id of Array.isArray(wantedFileIds) ? wantedFileIds : []) {
+      if (!isSettled(files[id])) return true;
+    }
+  }
+  return false;
+}
+
+// Annotate freshly scanned lessons with any prior run state, keyed by lessonId.
+// Never by index: instructors reorder courses, and index-keying would skip some
+// lessons and re-download others with no way for the user to tell.
+function mergeManifest(existing, scanned) {
+  const lessons = (existing && typeof existing === 'object' && existing.lessons) || {};
+  return (Array.isArray(scanned) ? scanned : []).map(l => {
+    const record = lessons[l.lessonId] || null;
+    return { ...l, priorStatus: record?.status ?? null, priorAssets: normalizeAssets(record) };
+  });
+}
+
+// Every lesson lands in exactly one bucket, and the buckets sum to the total —
+// a run that saved 12 of 40 lessons must never be able to present as "done".
+function runSummary(records) {
+  const list = Array.isArray(records) ? records : [];
+  const out = { total: list.length, saved: 0, skipped: 0, failed: 0, skippedByReason: {}, failedByReason: {} };
+  for (const r of list) {
+    if (r?.status === 'saved') out.saved++;
+    else if (r?.status === 'skipped') {
+      out.skipped++;
+      const k = r.reason || 'unknown';
+      out.skippedByReason[k] = (out.skippedByReason[k] || 0) + 1;
+    } else {
+      out.failed++;
+      const k = r?.reason || 'unknown';
+      out.failedByReason[k] = (out.failedByReason[k] || 0) + 1;
+    }
+  }
+  return out;
+}
 
 // This file must stay a plain script: background.js is a classic (non-module)
 // service worker and importScripts cannot load an ES module. The footer below
@@ -481,5 +552,6 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument,
     FILE_ID_RE, parseResources,
+    SETTLED_SKIP_KINDS, isSettled, normalizeAssets, lessonNeedsWork, mergeManifest, runSummary,
   };
 }
