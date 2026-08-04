@@ -268,10 +268,39 @@ function findLessonMeta(pageProps, lessonId) {
 // course does not blow a path-length limit.
 
 function sanitizeForFs(name) {
-  return String(name || '')
+  // NFC first: the same visible title can arrive as either a precomposed "é" or
+  // an "e" plus a combining accent. Those are different strings and identical
+  // filenames, so without normalising here the collision check below cannot see
+  // that two lessons are about to claim one file.
+  return String(name || '').normalize('NFC')
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Windows refuses a path much over 260 characters including the download
+// directory, so a deep course with long titles fails at the download itself with
+// an error naming nothing the user can act on. 240 leaves room for a typical
+// Downloads folder prefix.
+const MAX_RELATIVE_PATH = 240;
+
+// What the filesystem, rather than JavaScript, considers the same name. macOS
+// and Windows are both case-insensitive by default, so "Notes.pdf" and
+// "notes.pdf" are one file — and writing both means the second silently replaces
+// the first.
+function fsKey(path) {
+  return String(path).normalize('NFC').toLowerCase();
+}
+
+// Shrinks the last segment of a path until the whole thing fits, keeping the
+// numeric prefix that carries the ordering. Truncating the course or module
+// folder instead would rename a directory that other lessons are already in.
+function fitPath(dir, prefix, title, reserve) {
+  const room = MAX_RELATIVE_PATH - reserve - dir.length - 1 - prefix.length;
+  const chars = [...title];
+  if (room >= chars.length) return `${dir}/${prefix}${title}`;
+  const kept = chars.slice(0, Math.max(8, room)).join('').trim().replace(/\.+$/, '');
+  return `${dir}/${prefix}${kept || 'lesson'}`;
 }
 
 // Windows refuses these names with or without an extension, in any case. A
@@ -303,8 +332,11 @@ function claimUnique(used, stem, suffix) {
   let candidate = `${stem}${suffix}`;
   if (!used) return candidate;
   let n = 2;
-  while (used.has(candidate)) candidate = `${stem} (${n++})${suffix}`;
-  used.add(candidate);
+  // Keyed by what the filesystem collapses to, not by the exact string: an
+  // exact-match check calls two names unique and then lets one overwrite the
+  // other on any case-insensitive disk.
+  while (used.has(fsKey(candidate))) candidate = `${stem} (${n++})${suffix}`;
+  used.add(fsKey(candidate));
   return candidate;
 }
 
@@ -341,8 +373,14 @@ function bulkLessonBase(parts, usedBases) {
   const dir = moduleIdx
     ? `${course}/${padIndex(moduleIdx, moduleCount)} ${capSegment(moduleTitle, 100, 'module')}`
     : course;
-  const stem = `${padIndex(lessonIdx, lessonCount)} ${capSegment(lessonTitle, 120, 'lesson')}`;
-  return claimUnique(usedBases, `${dir}/${stem}`, '');
+  // Reserve room for everything that hangs off this stem: an extension, the
+  // " (2)" a collision may add, and the shortest attachment suffix that can
+  // still be written (" - " + 8 characters + extension). Without the last of
+  // those, a lesson stem long enough to fit on its own leaves its attachments
+  // no room and pushes them past the limit instead.
+  const prefix = `${padIndex(lessonIdx, lessonCount)} `;
+  const base = fitPath(dir, prefix, capSegment(lessonTitle, 120, 'lesson'), 24);
+  return claimUnique(usedBases, base, '');
 }
 
 function extensionOf(fileName) {
@@ -357,9 +395,14 @@ function extensionOf(fileName) {
 // the pure name is still testable, but the writer must pass one — otherwise the
 // second file quietly overwrites the first.
 function attachmentFilename(base, file, usedNames) {
-  const label = capSegment(file?.label, 80, 'attachment');
   const ext = extensionOf(file?.fileName);
-  return claimUnique(usedNames, `${base} - ${label}`, ext ? `.${ext}` : '');
+  const suffix = ext ? `.${ext}` : '';
+  // The lesson stem is already as long as it is allowed to be, so an attachment
+  // that would push past the limit shortens its own label rather than the stem
+  // every other asset of this lesson shares.
+  const room = MAX_RELATIVE_PATH - base.length - 3 - suffix.length - 4;
+  const label = capSegment(file?.label, Math.max(8, Math.min(80, room)), 'attachment');
+  return claimUnique(usedNames, `${base} - ${label}`, suffix);
 }
 
 // ── Lesson notes ──────────────────────────────────────────────────────────────
@@ -795,7 +838,7 @@ if (typeof module !== 'undefined' && module.exports) {
     parseClassroomUrl, lessonUrlFor, courseUrlFor,
     NEXT_DATA_RE, extractPageProps,
     courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps, findLessonMeta,
-    sanitizeForFs, capSegment, padIndex, shouldFlattenModules, bulkLessonBase, extensionOf, attachmentFilename,
+    sanitizeForFs, capSegment, padIndex, fsKey, MAX_RELATIVE_PATH, shouldFlattenModules, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument, runLogDocument,
     FILE_ID_RE, parseResources,
     BULK_LINE_MAX_CHARS, clipLogLine, bulkRunStartLine, reasonTally, tallyReason, describeTally, tallyExamples, bulkRunEndLine,

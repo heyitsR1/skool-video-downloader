@@ -2804,8 +2804,11 @@ async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtu
     // what a previous run already wrote: a settled attachment is skipped below,
     // so without seeding a resume would hand its name to the next same-labelled
     // file and overwrite it on disk.
+    // Seeded with the filesystem's idea of each name, matching how claimUnique
+    // stores them — seeding raw paths would leave a previously written file
+    // invisible to the collision check and let this run overwrite it.
     const usedAttachmentNames = new Set(
-      Object.values(lesson.priorAssets.files || {}).map(s => s?.path).filter(Boolean));
+      Object.values(lesson.priorAssets.files || {}).map(s => s?.path).filter(Boolean).map(fsKey));
     for (const file of resources.files) {
       if (bulkAbort.cancel) break;
       if (isSettled(lesson.priorAssets.files[file.fileId])) continue;

@@ -141,6 +141,39 @@ console.log('\ncourseTreeFromPageProps');
     bulk.courseTitleFrom({ course: { id: 'c0' } }, 'slug9'), 'Course slug9');
 }
 
+console.log('\nfilesystem-safe naming');
+{
+  // macOS and Windows are both case-insensitive by default, so two names that
+  // differ only in case are one file. An exact-match collision check calls them
+  // unique and lets the second silently replace the first.
+  const used = new Set();
+  const a = bulk.attachmentFilename('C/01 L', { label: 'Notes', fileName: 'a.pdf' }, used);
+  const b = bulk.attachmentFilename('C/01 L', { label: 'notes', fileName: 'b.pdf' }, used);
+  check('an attachment differing only in case is disambiguated', b, 'C/01 L - notes (2).pdf');
+  ok('and the first keeps its own casing', a === 'C/01 L - Notes.pdf');
+
+  // The same visible title can arrive precomposed or decomposed. Different
+  // strings, one filename.
+  const u = new Set();
+  const p = { courseTitle: 'C', moduleIdx: null, moduleTitle: null, moduleCount: 0, lessonIdx: 1, lessonCount: 2 };
+  const nfc = bulk.bulkLessonBase({ ...p, lessonTitle: 'Caf\u00e9' }, u);
+  const nfd = bulk.bulkLessonBase({ ...p, lessonTitle: 'Cafe\u0301' }, u);
+  check('a decomposed title does not claim the precomposed one\'s file', nfd, 'C/01 Caf\u00e9 (2)');
+  ok('and the path itself is normalised', nfc === nfc.normalize('NFC'));
+
+  // Windows refuses paths much past 260 characters including the download
+  // folder. Over the limit the download fails, naming nothing actionable.
+  const worst = bulk.bulkLessonBase({ courseTitle: 'C'.repeat(150), moduleIdx: 3,
+    moduleTitle: 'M'.repeat(150), moduleCount: 99, lessonIdx: 5, lessonCount: 150,
+    lessonTitle: 'L'.repeat(200) }, new Set());
+  ok('a deep course with long titles still fits the path limit',
+    worst.length + '.mp4'.length <= bulk.MAX_RELATIVE_PATH);
+  // The stem must leave room for its own attachments, not just for itself.
+  const att = bulk.attachmentFilename(worst, { label: 'A'.repeat(100), fileName: 'f.pdf' }, new Set());
+  ok('and so do its attachments', att.length <= bulk.MAX_RELATIVE_PATH);
+  ok('the ordering prefix survives truncation', worst.split('/').pop().startsWith('005 '));
+}
+
 console.log('\nshouldFlattenModules');
 {
   const L = (...idx) => idx.map(i => ({ moduleIdx: i }));
