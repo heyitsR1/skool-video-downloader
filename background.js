@@ -44,6 +44,49 @@ function svdLog(context, message) {
   return logChain;
 }
 
+// ── Bulk-run log ──────────────────────────────────────────────────────────────
+// A bulk course run's own lines live in a SEPARATE key, and the reason is the
+// arithmetic: a report carries only the last 10 log lines, and one 40-lesson run
+// produces well over a hundred ordinary 'save' lines. In the shared rolling log
+// the run's start line — which course, what shape, what was asked for — is gone
+// long before the run ends, and a bulk report without it cannot be answered.
+//
+// So these get their own buffer and reserved slots in the report. bulk.js keeps
+// the run to four or five lines total; see its "Run diagnostics" section for why
+// nothing here may log per lesson.
+const BULK_LOG_MAX = 8;
+// How many of those slots the report guarantees. The rest of the 10 go to the
+// general log, so an unrelated failure during the run is still visible.
+const BULK_LOG_RESERVED = 5;
+// Matches the report worker's own cap. Sending more is silently truncated there.
+const REPORT_LOG_LINES = 10;
+
+function bulkLog(message) {
+  const ts = new Date().toISOString();
+  logChain = logChain.then(async () => {
+    try {
+      const { bulkLog: lines = [] } = await chrome.storage.local.get('bulkLog');
+      lines.push({ ts, context: 'bulk', message: String(message).slice(0, 300) });
+      await chrome.storage.local.set({ bulkLog: lines.slice(-BULK_LOG_MAX) });
+    } catch { /* logging must never break anything */ }
+  });
+  return logChain;
+}
+
+// Set for the duration of a bulk run. The per-download success line is genuinely
+// useful for a single download and pure noise ×150 during a course backup, where
+// it would evict every other line in the shared log.
+let bulkRunActive = false;
+
+// Bulk lines take reserved slots at the front rather than competing on recency,
+// then the most recent general lines fill what is left.
+function composeReportLog(bulkLines, generalLines, max = REPORT_LOG_LINES) {
+  const bulk = (Array.isArray(bulkLines) ? bulkLines : []).slice(-Math.min(max, BULK_LOG_RESERVED));
+  const room = Math.max(0, max - bulk.length);
+  const general = room ? (Array.isArray(generalLines) ? generalLines : []).slice(-room) : [];
+  return [...bulk, ...general];
+}
+
 // Skool-native (Mux) masters carry a signed-playback JWT in ?token=. Decoding
 // its `exp` costs nothing and turns an otherwise ambiguous 403 report into an
 // answer: a stale token and a missing Referer header fail identically from the
@@ -634,7 +677,7 @@ function describeVersion(status) {
 async function sendErrorReport(note, email, tabId) {
   await registryReady; // 'detected' must reflect the restored registry, not a cold Map
   await logChain;      // and the log must include the failure the user is reporting
-  const { debugLog = [] } = await chrome.storage.local.get('debugLog');
+  const { debugLog = [], bulkLog: bulkLines = [] } = await chrome.storage.local.get(['debugLog', 'bulkLog']);
   const [license, installId, versionStatus] = await Promise.all([
     getLicenseStatus().catch(() => null),
     getInstallId().catch(() => undefined),
@@ -668,7 +711,9 @@ async function sendErrorReport(note, email, tabId) {
       || (Number.isFinite(license?.remaining) ? `free (${license.remaining}/${license.limit} left)` : 'free'),
     detected: detected.length ? detected.join(', ').slice(0, 300) : 'none',
     installId,
-    log: debugLog.slice(-10),
+    // Bulk lines first with reserved slots — without that a course backup's own
+    // diagnosis loses every slot to its own successful downloads.
+    log: composeReportLog(bulkLines, debugLog),
   };
   for (const base of REPORT_API_BASES) {
     try {
@@ -1242,8 +1287,13 @@ function saveViaOffscreenAnchor(filename, size) {
       // Size matters more than latency here: the two are proportional (Chrome
       // copies the whole blob before creating the item), and a report that says
       // how many bytes were handed over answers "the file won't open" outright.
-      svdLog('save', `download started after ${Date.now() - startedAt}ms via ${how}`
-        + ` (id ${item.id}${size ? `, ${formatGB(size)}` : ''})`);
+      // Suppressed during a bulk run: see BULK_LOG_RESERVED. One course backup
+      // fires this a hundred-plus times and would leave the report holding
+      // nothing else.
+      if (!bulkRunActive) {
+        svdLog('save', `download started after ${Date.now() - startedAt}ms via ${how}`
+          + ` (id ${item.id}${size ? `, ${formatGB(size)}` : ''})`);
+      }
       finish(resolve, item.id);
     };
     const onCreated = (item) => {

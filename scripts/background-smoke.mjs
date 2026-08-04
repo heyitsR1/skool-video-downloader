@@ -226,5 +226,36 @@ check('a missing build flag fails closed to the store build',
       `${code} return describeVersion;`)({ runtime: { getManifest: () => ({ version: '1.3.9' }) } }, {})(null);
   })(), '1.3.9 cws');
 
+// ── 5. The report's log budget ───────────────────────────────────────────────
+// A report carries only the last 10 log lines. One bulk course run produces well
+// over a hundred ordinary 'save' lines, so on recency alone the run's own start
+// line — which course, what shape, what was asked for — is gone before the run
+// ends, and a bulk report without it cannot be answered. Reserved slots are what
+// stop that, and nothing else in the codebase would notice if they broke.
+console.log('\nreport log budget:');
+{
+  const compose = (() => {
+    const code = extract('background.js', ['BULK_LOG_RESERVED', 'REPORT_LOG_LINES', 'composeReportLog']);
+    return new Function(`${code} return composeReportLog;`)();
+  })();
+  const gen = n => Array.from({ length: n }, (_, i) => ({ context: 'save', message: `g${i}` }));
+  const blk = n => Array.from({ length: n }, (_, i) => ({ context: 'bulk', message: `b${i}` }));
+
+  check('no bulk run: the general log gets every slot',
+    compose([], gen(40)).map(e => e.message), ['g30','g31','g32','g33','g34','g35','g36','g37','g38','g39']);
+  check('a bulk run keeps its lines against a flood of saves',
+    compose(blk(5), gen(200)).map(e => e.message),
+    ['b0','b1','b2','b3','b4','g195','g196','g197','g198','g199']);
+  ok('and never exceeds what the worker keeps', compose(blk(8), gen(200)).length <= 10);
+  check('bulk takes no more than its reserve', compose(blk(8), gen(200)).filter(e => e.context === 'bulk').length, 5);
+  check('a short bulk run leaves the rest to the general log',
+    compose(blk(2), gen(200)).map(e => e.message).slice(0, 3), ['b0','b1','g192']);
+  check('the newest bulk lines win when there are more than the reserve',
+    compose(blk(8), gen(0)).map(e => e.message), ['b3','b4','b5','b6','b7']);
+  check('an empty general log is fine', compose(blk(3), []).map(e => e.message), ['b0','b1','b2']);
+  check('both empty', compose([], []), []);
+  check('non-array input never throws', compose(null, undefined), []);
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);
