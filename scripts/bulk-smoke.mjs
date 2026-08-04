@@ -141,6 +141,25 @@ console.log('\ncourseTreeFromPageProps');
     bulk.courseTitleFrom({ course: { id: 'c0' } }, 'slug9'), 'Course slug9');
 }
 
+console.log('\nshouldFlattenModules');
+{
+  const L = (...idx) => idx.map(i => ({ moduleIdx: i }));
+  // Observed on real courses: 37 of 38 modules held exactly one lesson, which
+  // with a folder per module writes one folder per file, named after the file.
+  ok('every module holding one lesson flattens', bulk.shouldFlattenModules(L(1, 2, 3)));
+  ok('one module with two lessons keeps the folders', !bulk.shouldFlattenModules(L(1, 1, 2)));
+  ok('the multi-lesson module can be last', !bulk.shouldFlattenModules(L(1, 2, 3, 3)));
+  // A course with no modules is already flat. Answering yes would be true and
+  // useless, and the caller reads this as "override the module path".
+  ok('a course with no modules is not flattened', !bulk.shouldFlattenModules(L(null, null)));
+  ok('a loose lesson beside single-lesson modules still flattens', bulk.shouldFlattenModules(L(null, 1, 2)));
+  ok('an empty course does not flatten', !bulk.shouldFlattenModules([]));
+  ok('a non-array is not flattened', !bulk.shouldFlattenModules(null));
+  // moduleIdx 0 is not a real module index (they start at 1), but it must not be
+  // read as "no module" by a truthiness test either.
+  ok('module index 0 counts as a module', bulk.shouldFlattenModules(L(0, 1)));
+}
+
 console.log('\nbulkLessonBase');
 {
   const used = new Set();

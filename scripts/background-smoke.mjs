@@ -884,6 +884,7 @@ console.log('\norchestrator:');
       mergeManifest: bulk.mergeManifest, lessonNeedsWork: bulk.lessonNeedsWork,
       isSettled: bulk.isSettled, SETTLED_SKIP_KINDS: bulk.SETTLED_SKIP_KINDS,
       bulkLessonBase: bulk.bulkLessonBase, capSegment: bulk.capSegment,
+      shouldFlattenModules: bulk.shouldFlattenModules,
       parseResources: bulk.parseResources, descToMarkdown: bulk.descToMarkdown,
       notesDocument: bulk.notesDocument, attachmentFilename: bulk.attachmentFilename,
       reasonTally: bulk.reasonTally, tallyReason: bulk.tallyReason,
@@ -897,6 +898,7 @@ console.log('\norchestrator:');
       const { chrome, BulkError, bulkLog, scanCourse, pruneDeletedAssets, resolveBulkLesson,
               enqueueDownloadAwaited, recordAsset, saveTextFile, saveYoutubeStub, saveAttachment,
               mergeManifest, lessonNeedsWork, isSettled, SETTLED_SKIP_KINDS, bulkLessonBase, capSegment,
+              shouldFlattenModules,
               parseResources, descToMarkdown, notesDocument, attachmentFilename, reasonTally, tallyReason,
               describeTally, tallyExamples, bulkRunStartLine, bulkRunEndLine, runSummary, flags } = d;
       ${code.replace(/\bbulkRunActive\b/g, 'flags.bulkRunActive')}
@@ -914,6 +916,44 @@ console.log('\norchestrator:');
       o.calls.enqueued[0].filename, 'C/01 A');
     ok('and the recorded path is the file that is actually written',
       o.calls.recorded.some(r => r.patch.video?.path === 'C/01 A.mp4'));
+  }
+
+  // Real courses overwhelmingly give each module a single lesson — 37 of 38
+  // modules in the courses this was checked against. A folder per module there
+  // writes one folder per file, named after the file inside it.
+  {
+    const lesson = (n, mod) => ({ lessonId: `l${n}`, title: `Lesson ${n}`, moduleIdx: mod,
+      moduleTitle: `Module ${mod}`, lessonIdx: 1, sourceKind: 'skool-native', sourceRef: 'v',
+      lessonUrl: 'https://u', descRaw: null, resourcesRaw: null });
+    {
+      const o = build({ scanCourse: async () => ({ courseTitle: 'C', shape: 'nested', moduleCount: 3,
+        lessons: [lesson(1, 1), lesson(2, 2), lesson(3, 3)] }) });
+      await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+      // Named after the module: with one lesson inside, the module title is the
+      // name the user saw in the sidebar, and the lesson's own is often filler.
+      check('single-lesson modules lose their folders and keep their names',
+        o.calls.enqueued.map(e => e.filename), ['C/01 Module 1', 'C/02 Module 2', 'C/03 Module 3']);
+    }
+    // A loose top-level lesson has no module title to borrow, so it keeps its own.
+    {
+      const o = build({ scanCourse: async () => ({ courseTitle: 'C', shape: 'mixed', moduleCount: 1,
+        lessons: [{ ...lesson(9, null), moduleTitle: null, title: 'Start Here' }, lesson(1, 1)] }) });
+      await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+      check('a loose lesson keeps its own title when the course flattens',
+        o.calls.enqueued.map(e => e.filename), ['C/01 Start Here', 'C/02 Module 1']);
+    }
+
+    // One module with two lessons and the folders are carrying real structure
+    // again, so every module keeps one — including the single-lesson ones, or
+    // the same course would number itself two different ways.
+    {
+      const o = build({ scanCourse: async () => ({ courseTitle: 'C', shape: 'nested', moduleCount: 2,
+        lessons: [lesson(1, 1), { ...lesson(2, 2), lessonIdx: 1 }, { ...lesson(3, 2), lessonIdx: 2 }] }) });
+      await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+      check('a real multi-lesson module keeps every folder',
+        o.calls.enqueued.map(e => e.filename),
+        ['C/01 Module 1/01 Lesson 1', 'C/02 Module 2/01 Lesson 2', 'C/02 Module 2/02 Lesson 3']);
+    }
   }
 
   // mode must be absent. A truthy unknown value reads as "single-rendition,

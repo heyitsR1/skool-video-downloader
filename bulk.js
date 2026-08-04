@@ -282,6 +282,31 @@ function claimUnique(used, stem, suffix) {
   return candidate;
 }
 
+// Real courses very often give every module exactly one lesson, and a folder per
+// module then produces a tree of one-file folders whose name repeats the file
+// inside them. When no module in the course holds more than one lesson, the
+// folders carry no information the filenames do not, so they are dropped and the
+// lessons are numbered in course order at the course root.
+//
+// The rule is per course, not per module: flattening only the single-lesson
+// modules of a mixed course would interleave loose files with folders and make
+// the numbering read differently at two levels of the same tree.
+//
+// A course with no modules at all is already flat, so it is not "flattened" —
+// saying yes there would be true but meaningless, and the caller uses this to
+// decide whether to override a module path it would otherwise build.
+function shouldFlattenModules(lessons) {
+  const list = Array.isArray(lessons) ? lessons : [];
+  const perModule = new Map();
+  for (const l of list) {
+    if (l?.moduleIdx == null) continue;
+    perModule.set(l.moduleIdx, (perModule.get(l.moduleIdx) || 0) + 1);
+  }
+  if (perModule.size === 0) return false;
+  for (const n of perModule.values()) if (n > 1) return false;
+  return true;
+}
+
 // Reserves and returns the extensionless stem for one lesson. Video, notes and
 // attachments all hang off it, so a single collision check covers every asset.
 function bulkLessonBase(parts, usedBases) {
@@ -683,7 +708,7 @@ if (typeof module !== 'undefined' && module.exports) {
     parseClassroomUrl, lessonUrlFor, courseUrlFor,
     NEXT_DATA_RE, extractPageProps,
     courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps,
-    sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
+    sanitizeForFs, capSegment, padIndex, shouldFlattenModules, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument,
     FILE_ID_RE, parseResources,
     BULK_LINE_MAX_CHARS, clipLogLine, bulkRunStartLine, reasonTally, tallyReason, describeTally, tallyExamples, bulkRunEndLine,

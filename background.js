@@ -2547,13 +2547,28 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
     const k = l.moduleIdx ?? 'root';
     lessonCountByModule.set(k, (lessonCountByModule.get(k) || 0) + 1);
   }
+  // Most real courses give every module exactly one lesson. Keeping the module
+  // folders there produces one folder per file, named after the file inside it.
+  const flatten = shouldFlattenModules(merged);
+  let ordinal = 0;
   for (const l of merged) {
-    l.base = bulkLessonBase({
-      courseTitle: scan.courseTitle,
-      moduleIdx: l.moduleIdx, moduleTitle: l.moduleTitle, moduleCount: scan.moduleCount,
-      lessonIdx: l.lessonIdx, lessonTitle: l.title,
-      lessonCount: lessonCountByModule.get(l.moduleIdx ?? 'root') || 1,
-    }, usedBases);
+    ordinal++;
+    l.base = bulkLessonBase(flatten
+      // Numbered across the whole course, since the module order that used to
+      // carry the sequence is no longer in the path.
+      //
+      // Named after the module, not the lesson: the module title is what the
+      // classroom sidebar shows and what the user recognises, and where a module
+      // holds one lesson that lesson is very often called something generic like
+      // "All files" or "New page". Dropping the folder must not drop the only
+      // name that identified the thing.
+      ? { courseTitle: scan.courseTitle, moduleIdx: null, moduleTitle: null, moduleCount: 0,
+          lessonIdx: ordinal, lessonTitle: l.moduleTitle || l.title, lessonCount: merged.length }
+      : { courseTitle: scan.courseTitle,
+          moduleIdx: l.moduleIdx, moduleTitle: l.moduleTitle, moduleCount: scan.moduleCount,
+          lessonIdx: l.lessonIdx, lessonTitle: l.title,
+          lessonCount: lessonCountByModule.get(l.moduleIdx ?? 'root') || 1 },
+      usedBases);
   }
 
   const youtubeIndex = [];
