@@ -500,13 +500,13 @@ function parseResources(raw) {
 // with a worked example, and one line at the end whose counts add up. That is
 // four or five lines for a run of any size.
 
-const BULK_LOG_MAX = 300;
+const BULK_LINE_MAX_CHARS = 300;
 
 // Truncation is visible. A line silently cut at 300 characters reads as complete
 // and sends whoever is diagnosing it down the wrong path.
 function clipLogLine(s) {
   const flat = String(s).replace(/\s+/g, ' ').trim();
-  return flat.length <= BULK_LOG_MAX ? flat : `${flat.slice(0, BULK_LOG_MAX - 1)}…`;
+  return flat.length <= BULK_LINE_MAX_CHARS ? flat : `${flat.slice(0, BULK_LINE_MAX_CHARS - 1)}…`;
 }
 
 function describeWant(want) {
@@ -686,7 +686,7 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument,
     FILE_ID_RE, parseResources,
-    BULK_LOG_MAX, clipLogLine, bulkRunStartLine, reasonTally, tallyReason, describeTally, tallyExamples, bulkRunEndLine,
+    BULK_LINE_MAX_CHARS, clipLogLine, bulkRunStartLine, reasonTally, tallyReason, describeTally, tallyExamples, bulkRunEndLine,
     NATIVE_HOST_PRIMARY, NATIVE_HOST_FALLBACK, nativePlaybackFrom,
     SETTLED_SKIP_KINDS, isSettled, normalizeAssets, lessonNeedsWork, mergeManifest, runSummary,
   };

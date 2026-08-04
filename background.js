@@ -54,7 +54,7 @@ function svdLog(context, message) {
 // So these get their own buffer and reserved slots in the report. bulk.js keeps
 // the run to four or five lines total; see its "Run diagnostics" section for why
 // nothing here may log per lesson.
-const BULK_LOG_MAX = 8;
+const BULK_LOG_LINES = 8;
 // How many of those slots the report guarantees. The rest of the 10 go to the
 // general log, so an unrelated failure during the run is still visible.
 const BULK_LOG_RESERVED = 5;
@@ -67,7 +67,7 @@ function bulkLog(message) {
     try {
       const { bulkLog: lines = [] } = await chrome.storage.local.get('bulkLog');
       lines.push({ ts, context: 'bulk', message: String(message).slice(0, 300) });
-      await chrome.storage.local.set({ bulkLog: lines.slice(-BULK_LOG_MAX) });
+      await chrome.storage.local.set({ bulkLog: lines.slice(-BULK_LOG_LINES) });
     } catch { /* logging must never break anything */ }
   });
   return logChain;

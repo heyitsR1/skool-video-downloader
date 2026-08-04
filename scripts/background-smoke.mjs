@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -1010,6 +1011,32 @@ console.log('\norchestrator:');
 
   check('the best quality wins', build().pickBestQuality([{ height: 480 }, { height: 1080 }, { height: 720 }]).height, 1080);
   check('an unlabelled height does not beat a real one', build().pickBestQuality([{ height: 720 }, {}]).height, 720);
+}
+
+// ── 11b. The worker's scripts share one global scope ─────────────────────────
+// importScripts does not give each file its own scope: every top-level const,
+// let, class and function lands in the same global. Two files declaring the same
+// name is a SyntaxError that kills the whole worker before a line of it runs —
+// no download, no popup response, nothing. It shipped once (BULK_LOG_MAX meant
+// "how many lines" in background.js and "how many characters" in bulk.js), and
+// no other test could see it: each file parses fine alone.
+//
+// Compiling the concatenation, in the worker's own load order, is exactly the
+// check the browser performs. vm.Script compiles without executing, so no
+// chrome.* stub is needed.
+console.log('\nworker global scope');
+{
+  const imported = /importScripts\(([^)]*)\)/.exec(fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8'));
+  const files = [...(imported ? imported[1].matchAll(/'([^']+)'/g) : [])].map(m => m[1]);
+  ok('importScripts targets were found', files.length > 0);
+  // Imported files are evaluated first, then background.js's own body.
+  const combined = [...files, 'background.js']
+    .map(f => fs.readFileSync(path.join(ROOT, f), 'utf8'))
+    .join('\n;\n');
+  let error = null;
+  try { new vm.Script(combined, { filename: 'worker-bundle.js' }); }
+  catch (e) { error = e.message; }
+  check(`${[...files, 'background.js'].join(' + ')} compile together`, error, null);
 }
 
 // ── 12. Bulk orchestrator invariants ─────────────────────────────────────────
