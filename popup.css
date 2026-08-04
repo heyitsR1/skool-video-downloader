@@ -26,7 +26,8 @@ body {
 .hidden { display: none !important; }
 
 /* ── Header ─────────────────────────────────────────────── */
-.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 14px; }
+.header__meta { display: flex; align-items: center; flex: none; }
 .logo { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .logo__mark {
   width: 24px; height: 24px; border-radius: 7px; overflow: hidden; flex: none;
@@ -34,7 +35,13 @@ body {
   box-shadow: 0 2px 6px rgba(0,0,0,.15);
 }
 .logo__mark img { width: 100%; height: 100%; display: block; }
-.logo__text { font-weight: 700; font-size: 13.5px; letter-spacing: -0.2px; white-space: nowrap; }
+/* Truncates rather than being clipped by the badge and the report chip, which
+   both keep their full width — in a 400px popup the product name is the one
+   thing in this row the user does not need to read. */
+.logo__text {
+  font-weight: 700; font-size: 13.5px; letter-spacing: -0.2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
 
 .badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 100px; flex: none; }
 .badge--free      { background: #f1f1f4; color: #6b7280; }

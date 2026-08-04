@@ -13,13 +13,15 @@
         <span class="logo__mark"><img src="icons/icon48.png" alt="" width="24" height="24"></span>
         <span class="logo__text">Skool Video Downloader</span>
       </span>
-      <span id="tier-badge" class="badge badge--free" data-i18n="badgeFree">Free</span>
-      <!-- Top right, not buried in the footer. When a download fails the report
-           is the only thing that tells us why, and a link nobody sees is a
-           failure nobody hears about. -->
-      <button id="header-report" class="report-chip" data-i18n-title="footerReport" title="Report a problem">
-        <span aria-hidden="true">🚩</span> <span data-i18n="reportChip">Report</span>
-      </button>
+      <span class="header__meta">
+        <span id="tier-badge" class="badge badge--free" data-i18n="badgeFree">Free</span>
+        <!-- Top right, not buried in the footer. When a download fails the report
+             is the only thing that tells us why, and a link nobody sees is a
+             failure nobody hears about. -->
+        <button id="header-report" class="report-chip" data-i18n-title="footerReport" title="Report a problem">
+          <span aria-hidden="true">🚩</span> <span data-i18n="reportChip">Report</span>
+        </button>
+      </span>
     </div>
 
     <!-- Update banner (hidden unless this channel is behind; dismiss per version) -->
