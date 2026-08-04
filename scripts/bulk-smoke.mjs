@@ -317,6 +317,29 @@ console.log('\ndescToMarkdown');
     { type: 'paragraph', content: [{ type: 'text', marks: [{ type: 'code' }], text: 'npm run build' }] }
   ])), '`npm run build`');
 
+  // CommonMark will not close emphasis after a space, so `**bold **` renders as
+  // literal asterisks. A trailing space on a bold run is ordinary in the Skool
+  // editor whenever a link follows it — seen in real course notes, where every
+  // lesson's "Need help getting started? " lost its bold.
+  const emphasis = (marks, text, rest) => bulk.descToMarkdown(JSON.stringify([
+    { type: 'paragraph', content: [{ type: 'text', marks, text }, { type: 'text', text: rest || '' }] }]));
+  check('bold keeps its trailing space outside the delimiters',
+    emphasis([{ type: 'bold' }], 'Need help getting started? ', 'x'), '**Need help getting started?** x');
+  check('italic too', emphasis([{ type: 'italic' }], 'soon ', 'x'), '*soon* x');
+  // Mid-paragraph, because descToMarkdown trims the whole document — a leading
+  // space at the very start is removed by that trim, not by padOutside.
+  const midParagraph = (marks, text) => bulk.descToMarkdown(JSON.stringify([
+    { type: 'paragraph', content: [
+      { type: 'text', text: 'see' }, { type: 'text', marks, text }, { type: 'text', text: 'end' }] }]));
+  check('and its leading space', midParagraph([{ type: 'bold' }], ' lead '), 'see **lead** end');
+  check('a bold run of only spaces is left alone rather than emphasised',
+    midParagraph([{ type: 'bold' }], '   '), 'see   end');
+  check('bold with no surrounding space is unchanged',
+    emphasis([{ type: 'bold' }], 'tight', ''), '**tight**');
+  // Code spans already render with inner padding, so they must not be rewritten.
+  check('code spans keep their own whitespace',
+    emphasis([{ type: 'code' }], ' x ', ''), '` x `');
+
   check('ordered list numbers from one', bulk.descToMarkdown(JSON.stringify([
     { type: 'orderedList', content: [
       { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'First' }] }] },

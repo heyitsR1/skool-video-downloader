@@ -52,6 +52,9 @@ notes are written from.
 - A course backup falling back to the second playback host now sends that host
   the same headers as the first. It was given the first host's rule, so the
   fallback would have failed in precisely the situation it exists for.
+- Bold and italic text in saved lesson notes renders as bold and italic. A run
+  ending in a space — which is normal whenever a link follows it — was written as
+  `**like this **`, which Markdown shows with the asterisks visible instead.
 
 ## 1.4.0 — 2026-08-01
 

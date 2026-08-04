@@ -415,6 +415,20 @@ function attachmentFilename(base, file, usedNames) {
 // and conflating them leaves the recursion unguarded.
 const MAX_NODE_DEPTH = 100;
 
+// Emphasis delimiters go INSIDE the run's own whitespace. CommonMark requires a
+// closing `**` not to be preceded by a space, so the obvious `**${t}**` turns a
+// Skool editor run like "Need help getting started? " — a trailing space is
+// completely normal when the bold text is followed by a link — into literal
+// asterisks in the saved .md, losing the bold. Seen in real course notes.
+//
+// Text that is nothing but whitespace is returned as-is: there is no word there
+// to emphasise, and `** **` is the same broken output in a different shape.
+function padOutside(t, delim) {
+  const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(t);
+  if (!m || !m[2]) return t;
+  return `${m[1]}${delim}${m[2]}${delim}${m[3]}`;
+}
+
 function pmInline(node, depth) {
   const d = Number(depth) || 0;
   if (!node || typeof node !== 'object' || d > MAX_NODE_DEPTH) return '';
@@ -422,8 +436,11 @@ function pmInline(node, depth) {
     let t = typeof node.text === 'string' ? node.text : '';
     for (const mark of Array.isArray(node.marks) ? node.marks : []) {
       if (!mark || typeof mark !== 'object') continue;
-      if (mark.type === 'bold') t = `**${t}**`;
-      else if (mark.type === 'italic') t = `*${t}*`;
+      if (mark.type === 'bold') t = padOutside(t, '**');
+      else if (mark.type === 'italic') t = padOutside(t, '*');
+      // Code spans are left alone: CommonMark strips one leading/trailing space
+      // inside backticks, so ` x ` already renders, and whitespace inside code is
+      // the author's business.
       else if (mark.type === 'code') t = '`' + t + '`';
       else if (mark.type === 'link' && typeof mark.attrs?.href === 'string') t = `[${t}](${mark.attrs.href})`;
     }
