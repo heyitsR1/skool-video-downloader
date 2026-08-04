@@ -899,10 +899,12 @@ async function bulkStart(type) {
 
 // Two-step rather than confirm(): a modal dialog can close the popup out from
 // under the run, and this discards a record of work already on disk.
+const BULK_RESTART_BUTTONS = ['bulk-restart', 'bulk-restart-done'];
+
 function bulkDisarmRestart() {
   if (!bulkRestartArmed) return;
   bulkRestartArmed = false;
-  bulkEl('bulk-restart').textContent = bulkT('bulkRestart');
+  for (const id of BULK_RESTART_BUTTONS) bulkEl(id).textContent = bulkT('bulkRestart');
 }
 
 function setupBulkPanel() {
@@ -914,16 +916,22 @@ function setupBulkPanel() {
   for (const id of ['bulk-cancel', 'bulk-cancel-2']) {
     bulkEl(id).addEventListener('click', () => send({ type: 'CANCEL_BULK' }));
   }
-  bulkEl('bulk-restart').addEventListener('click', async () => {
-    if (!bulkCtx) return;
-    if (!bulkRestartArmed) {
-      bulkRestartArmed = true;
-      bulkEl('bulk-restart').textContent = bulkT('bulkRestartConfirm');
-      return;
-    }
-    await send({ type: 'CLEAR_MANIFEST', group: bulkCtx.group, courseSlug: bulkCtx.courseSlug });
-    bulkShow('bulk-idle');
-  });
+  // On both the resume pane and the finished pane. A run that just completed is
+  // exactly when a user notices something is missing, and leaving them only
+  // "Back" drops them on a start button that does nothing, because every lesson
+  // is already recorded as saved.
+  for (const id of BULK_RESTART_BUTTONS) {
+    bulkEl(id).addEventListener('click', async () => {
+      if (!bulkCtx) return;
+      if (!bulkRestartArmed) {
+        bulkRestartArmed = true;
+        bulkEl(id).textContent = bulkT('bulkRestartConfirm');
+        return;
+      }
+      await send({ type: 'CLEAR_MANIFEST', group: bulkCtx.group, courseSlug: bulkCtx.courseSlug });
+      bulkShow('bulk-idle');
+    });
+  }
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg?.type === 'BULK_STATE') {

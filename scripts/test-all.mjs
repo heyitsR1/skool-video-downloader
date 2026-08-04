@@ -13,12 +13,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SUITES = ['bulk-smoke.mjs', 'background-smoke.mjs', 'vimeo-smoke.mjs', 'yt-smoke.mjs'];
+const SUITES = ['bulk-smoke.mjs', 'background-smoke.mjs', 'e2e-smoke.mjs', 'vimeo-smoke.mjs', 'yt-smoke.mjs'];
 const NETWORK = new Set(['vimeo-smoke.mjs', 'yt-smoke.mjs']);
+// Drives a real browser; reports itself as skipped when Chrome is absent.
+const BROWSER = new Set(['e2e-smoke.mjs']);
 
 const failed = [];
 for (const suite of SUITES) {
-  console.log(`\n━━ ${suite}${NETWORK.has(suite) ? '  (needs network)' : ''}`);
+  const tag = NETWORK.has(suite) ? '  (needs network)' : BROWSER.has(suite) ? '  (needs Chrome)' : '';
+  console.log(`\n━━ ${suite}${tag}`);
   const r = spawnSync(process.execPath, [path.join(HERE, suite)], { stdio: 'inherit' });
   if (r.status !== 0) failed.push(`${suite} (exit ${r.status})`);
 }
