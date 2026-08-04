@@ -14,6 +14,21 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.0 — 2026-08-04
+
+### Added
+- **Download an entire course.** Back up every lesson you already have access to
+  in one run — videos, lesson notes as Markdown, and attached files — organised
+  into a folder per course and module.
+- Runs in the background: close the popup, keep browsing, come back to a summary.
+- Pause and resume any time, including after restarting your browser. Finished
+  lessons are never downloaded twice, and a file you delete yourself is fetched
+  again on the next run.
+- Lessons your account cannot open yet are skipped and listed when the run
+  finishes, so you always know exactly what you got.
+- YouTube-hosted lessons are collected into `_youtube-lessons.txt` for the
+  download guide, since they cannot be saved in the browser.
+
 ## 1.4.0 — 2026-08-01
 
 ### Removed
