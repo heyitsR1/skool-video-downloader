@@ -2135,3 +2135,116 @@ function embedSourceId(platform, url) {
   if (platform === SOURCE.WISTIA) { m = /(?:medias|iframe)\/([A-Za-z0-9]{8,})/i.exec(s); return m ? m[1] : null; }
   return null;
 }
+
+// ── Asset writers ─────────────────────────────────────────────────────────────
+// Everything here is small: notes, an attachment, a pointer file. The videos go
+// through the download queue instead.
+//
+// Every writer WAITS for the download to reach 'complete' before returning. The
+// caller records the asset in the manifest the moment the writer resolves, and a
+// manifest entry means "this is on disk, never fetch it again" — so returning on
+// the download id alone would record a file that a disk-full or interrupted save
+// never actually wrote, and no later run would ever retry it.
+
+// A small text file goes to disk as a data URL: a service worker has no
+// URL.createObjectURL, and these are kilobytes.
+function textDataUrl(text, mime) {
+  // UTF-8 safe (btoa alone chokes on non-Latin1), and chunked so
+  // String.fromCharCode never sees an argument list it cannot take.
+  const bytes = new TextEncoder().encode(text);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return `data:${mime};base64,${btoa(bin)}`;
+}
+
+// Promise form with an explicit lastError check: chrome.downloads.download
+// reports a refused download through lastError, and reading it is what stops a
+// refusal being mistaken for a successful save.
+function startDownload(options) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download(options, (id) => {
+      if (chrome.runtime.lastError || id === undefined) {
+        reject(new BulkError('save-failed', chrome.runtime.lastError?.message || 'download rejected'));
+      } else resolve(id);
+    });
+  });
+}
+
+// 'overwrite', not 'uniquify'. Paths are already unique within a run (see
+// bulkLessonBase), so a conflict here means a file from an earlier run — and we
+// only reach this line when the manifest says that asset is NOT settled, i.e.
+// the earlier file is missing or stale. Uniquify would leave the stale copy and
+// quietly accumulate "notes (1).md", "notes (2).md" beside it, while the
+// manifest recorded the path we asked for rather than the one Chrome wrote.
+const BULK_CONFLICT_ACTION = 'overwrite';
+
+async function saveTextFile(path, text, mime) {
+  const downloadId = await startDownload({
+    url: textDataUrl(text, mime),
+    filename: path,
+    conflictAction: BULK_CONFLICT_ACTION,
+    saveAs: false,
+  });
+  const { state, error } = await waitForDownloadEnd(downloadId);
+  if (state !== 'complete') throw new BulkError('save-failed', saveFailureMessage(state, error));
+  return downloadId;
+}
+
+// Mint a signed URL for one attachment. 403 and 423 both mean the account cannot
+// have this file right now.
+//
+// That is recorded as a skip, not a failure — but it deliberately does NOT
+// settle (see SETTLED_SKIP_KINDS): 423 is Locked, and both it and 403 can turn
+// into a granted file once the user's access changes. Retrying one attachment on
+// a later run costs one request; settling it wrongly costs the file for good.
+async function fetchAttachmentUrl(fileId) {
+  if (!FILE_ID_RE.test(fileId)) throw new BulkError('attachment-forbidden', 'Malformed attachment id.');
+  const res = await bulkFetch(`https://api2.skool.com/files/${fileId}/download-url?expire=28800`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
+  if (res.status === 403 || res.status === 423) {
+    throw new BulkError('attachment-forbidden', `This attachment is not available to your account (${res.status}).`);
+  }
+  if (!res.ok) throw new BulkError('network', `Attachment link failed (${res.status}).`);
+
+  const body = (await res.text()).trim();
+  // The endpoint answers with the bare URL, but a JSON envelope is the obvious
+  // way for it to change, and quietly downloading "{"url":..." as a filename is
+  // worse than either. Accept both shapes, and put what did arrive in the error
+  // when it is neither — otherwise the report says only "could not be read".
+  let url = body;
+  if (body.startsWith('{') || body.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(body);
+      url = typeof parsed === 'string' ? parsed : (parsed?.url || parsed?.downloadUrl || '');
+    } catch { url = ''; }
+  }
+  if (!/^https:\/\/\S+$/i.test(url)) {
+    throw new BulkError('network', `The attachment link could not be read (got ${JSON.stringify(body.slice(0, 60))}).`);
+  }
+  return url;
+}
+
+async function saveAttachment(fileId, path) {
+  const url = await fetchAttachmentUrl(fileId);
+  const downloadId = await startDownload({
+    url, filename: path, conflictAction: BULK_CONFLICT_ACTION, saveAs: false,
+  });
+  const { state, error } = await waitForDownloadEnd(downloadId);
+  if (state !== 'complete') throw new BulkError('save-failed', saveFailureMessage(state, error));
+  return downloadId;
+}
+
+// A YouTube-hosted lesson cannot be downloaded in the browser, so record where it
+// lives instead of failing. Windows opens a .url file directly; elsewhere it is
+// still readable text naming the URL.
+function youtubeShortcut(url) {
+  return `[InternetShortcut]\r\nURL=${url}\r\n`;
+}
+
+function saveYoutubeStub(base, url) {
+  return saveTextFile(`${base}.url`, youtubeShortcut(url), 'text/plain');
+}

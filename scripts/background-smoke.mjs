@@ -556,5 +556,141 @@ console.log('\nlesson media resolution:');
     (await build().resolveBulkLesson(lesson({ sourceKind: bulk.SOURCE.YOUTUBE, sourceRef: null }))).reason, 'missing-source');
 }
 
+// ── 9. Asset writers ─────────────────────────────────────────────────────────
+// The caller records an asset in the manifest the moment a writer resolves, and
+// a manifest entry means "on disk, never fetch again". So a writer that returns
+// before the file actually landed writes a permanent lie: the lesson is marked
+// saved, the file is not there, and no later run retries it.
+console.log('\nasset writers:');
+{
+  const { createRequire } = await import('node:module');
+  const bulk = createRequire(import.meta.url)(path.join(ROOT, 'bulk.js'));
+
+  const build = (deps = {}) => {
+    const code = extract('background.js',
+      ['textDataUrl', 'startDownload', 'BULK_CONFLICT_ACTION', 'saveTextFile',
+       'fetchAttachmentUrl', 'saveAttachment', 'youtubeShortcut', 'saveYoutubeStub']);
+    const calls = { download: [], waited: [] };
+    const api = new Function('d', `
+      const { chrome, BulkError, FILE_ID_RE, bulkFetch, waitForDownloadEnd, saveFailureMessage, TextEncoder, btoa } = d;
+      ${code}
+      return { textDataUrl, saveTextFile, fetchAttachmentUrl, saveAttachment, youtubeShortcut, saveYoutubeStub, BULK_CONFLICT_ACTION };
+    `)({
+      chrome: {
+        runtime: { lastError: deps.lastError || null },
+        downloads: { download: (o, cb) => { calls.download.push(o); cb(deps.refuse ? undefined : 7); } },
+      },
+      BulkError: class extends Error { constructor(c, m) { super(m); this.code = c; } },
+      FILE_ID_RE: bulk.FILE_ID_RE,
+      bulkFetch: deps.bulkFetch || (async () => ({ ok: true, status: 200, text: async () => 'https://cdn.example/file.pdf' })),
+      waitForDownloadEnd: async id => { calls.waited.push(id); return deps.endState || { state: 'complete' }; },
+      saveFailureMessage: (s, e) => `save failed: ${s}${e ? ` (${e})` : ''}`,
+      TextEncoder, btoa,
+    });
+    return { ...api, calls };
+  };
+
+  // The bug this section exists for.
+  {
+    const w = build();
+    await w.saveTextFile('C/01 A.md', '# Notes', 'text/markdown');
+    check('a text write waits for the download to complete', w.calls.waited, [7]);
+  }
+  {
+    const w = build({ endState: { state: 'interrupted', error: 'FILE_NO_SPACE' } });
+    let code = null;
+    try { await w.saveTextFile('C/01 A.md', 'x', 'text/markdown'); } catch (e) { code = e.code; }
+    check('an interrupted text write throws rather than reporting saved', code, 'save-failed');
+  }
+  {
+    const w = build({ endState: { state: 'interrupted', error: 'FILE_NO_SPACE' },
+      bulkFetch: async () => ({ ok: true, status: 200, text: async () => 'https://cdn.example/f.pdf' }) });
+    let code = null;
+    try { await w.saveAttachment('a'.repeat(32), 'C/01 A - W.pdf'); } catch (e) { code = e.code; }
+    check('an interrupted attachment throws too', code, 'save-failed');
+  }
+  {
+    const w = build({ refuse: true });
+    let code = null;
+    try { await w.saveTextFile('C/01 A.md', 'x', 'text/markdown'); } catch (e) { code = e.code; }
+    check('a refused download is not a silent success', code, 'save-failed');
+  }
+
+  // Overwrite, not uniquify: reaching a writer means the manifest says the asset
+  // is not settled, so any file already there is stale. Uniquify would keep the
+  // stale copy, add "notes (1).md" beside it, and record the path we asked for.
+  {
+    const w = build();
+    await w.saveTextFile('C/01 A.md', 'x', 'text/markdown');
+    check('conflicts overwrite the stale file', w.calls.download[0].conflictAction, 'overwrite');
+    check('and never prompt', w.calls.download[0].saveAs, false);
+  }
+
+  // Notes are UTF-8. btoa alone throws on anything outside Latin-1, which would
+  // fail every lesson whose notes contain an em dash or an emoji.
+  {
+    const w = build();
+    const url = w.textDataUrl('héllo — 🎬', 'text/markdown');
+    ok('a data URL is produced for non-Latin-1 text', url.startsWith('data:text/markdown;base64,'));
+    check('and it round-trips exactly',
+      Buffer.from(url.split(',')[1], 'base64').toString('utf8'), 'héllo — 🎬');
+  }
+  {
+    const w = build();
+    const big = 'x'.repeat(200000);
+    check('a large document does not blow the argument list',
+      Buffer.from(w.textDataUrl(big, 'text/plain').split(',')[1], 'base64').toString('utf8').length, 200000);
+  }
+
+  // Attachments: 403/423 are a skip, everything else is a failure, and the two
+  // must not be confused — a skip is recorded, a failure is retried this run.
+  const att = async (over) => {
+    const w = build({ bulkFetch: async () => over });
+    try { return { url: await w.fetchAttachmentUrl('a'.repeat(32)) }; }
+    catch (e) { return { code: e.code, message: e.message }; }
+  };
+  check('a bare URL body is used as-is',
+    (await att({ ok: true, status: 200, text: async () => ' https://cdn.example/f.pdf ' })).url,
+    'https://cdn.example/f.pdf');
+  check('403 is a forbidden skip', (await att({ ok: false, status: 403, text: async () => '' })).code, 'attachment-forbidden');
+  check('423 is a forbidden skip too', (await att({ ok: false, status: 423, text: async () => '' })).code, 'attachment-forbidden');
+  check('500 is a network failure, not a skip', (await att({ ok: false, status: 500, text: async () => '' })).code, 'network');
+  ok('and names the status', /500/.test((await att({ ok: false, status: 500, text: async () => '' })).message));
+  ok('attachment-forbidden deliberately does not settle — access can change',
+    !bulk.SETTLED_SKIP_KINDS.includes('attachment-forbidden'));
+
+  // A JSON envelope is the obvious way for this endpoint to change. Downloading
+  // a file literally named {"url":... is worse than either outcome.
+  check('a JSON envelope is understood',
+    (await att({ ok: true, status: 200, text: async () => '{"url":"https://cdn.example/f.pdf"}' })).url,
+    'https://cdn.example/f.pdf');
+  check('a JSON string body is understood',
+    (await att({ ok: true, status: 200, text: async () => '"https://cdn.example/f.pdf"' })).url,
+    'https://cdn.example/f.pdf');
+  {
+    const r = await att({ ok: true, status: 200, text: async () => '<html>nope</html>' });
+    check('an unreadable body is a failure', r.code, 'network');
+    ok('and the error quotes what actually arrived', /nope/.test(r.message));
+  }
+  {
+    const w = build();
+    let code = null;
+    try { await w.fetchAttachmentUrl('too-short'); } catch (e) { code = e.code; }
+    check('a malformed file id never becomes a request', code, 'attachment-forbidden');
+  }
+  check('a non-https link is refused',
+    (await att({ ok: true, status: 200, text: async () => 'javascript:alert(1)' })).code, 'network');
+
+  // YouTube lessons are recorded, not downloaded.
+  {
+    const w = build();
+    check('the shortcut is a Windows .url file',
+      w.youtubeShortcut('https://youtu.be/x'), '[InternetShortcut]\r\nURL=https://youtu.be/x\r\n');
+    await w.saveYoutubeStub('C/01 Lesson', 'https://youtu.be/x');
+    check('and hangs off the lesson base', w.calls.download[0].filename, 'C/01 Lesson.url');
+    check('and it waits like every other writer', w.calls.waited, [7]);
+  }
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);
