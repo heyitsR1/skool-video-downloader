@@ -338,5 +338,95 @@ console.log('\ncourse scan diagnostics:');
   check('and logs nothing — the run start line covers it', good.logged.length, 0);
 }
 
+// ── 7. The download settle hook ──────────────────────────────────────────────
+// A bulk run downloads one lesson at a time and awaits each. So a job that ends
+// without settling does not fail the run — it HANGS it, with no error, no
+// progress and no way out. Every path a job can leave by must settle exactly
+// once, including the two that never reach runJob at all.
+console.log('\ndownload settle hook:');
+{
+  // Real queue, stubbed runJob: the interesting logic is the plumbing around it.
+  const build = () => {
+    const code = extract('background.js',
+      ['MAX_CONCURRENT', 'enqueueDownload', 'enqueueDownloadAwaited', 'settleJob', 'pump', 'cancelJob']);
+    const started = [];
+    const activeJobs = new Map();
+    const api = new Function('deps', `
+      const { broadcast, runJob, activeJobs, downloadQueue, jobSeqBox } = deps;
+      let jobSeq = 0;
+      ${code.replace(/\bjobSeq\b/g, 'jobSeqBox.n')}
+      return { enqueueDownload, enqueueDownloadAwaited, cancelJob, settleJob, pump };
+    `)({
+      broadcast: () => {},
+      // Occupies a slot the way the real runJob does, so pump() stops at
+      // MAX_CONCURRENT and the rest genuinely stay queued — which is the state
+      // this whole section is about.
+      runJob: job => { started.push(job); activeJobs.set(job.jobId, { meta: job.meta }); },
+      activeJobs,
+      downloadQueue: [],
+      jobSeqBox: { n: 0 },
+    });
+    return { ...api, started, activeJobs };
+  };
+
+  // A job cancelled while still queued never reaches runJob, so runJob's finally
+  // never runs. Before this was fixed, nothing settled it and the awaiting run
+  // waited forever.
+  {
+    const q = build();
+    const outcomes = [];
+    for (let i = 0; i < 12; i++) q.enqueueDownloadAwaited({ quality: {}, filename: `f${i}` }).then(o => outcomes.push(o));
+    const queuedId = q.started.length + 1;   // the first that did NOT start
+    q.cancelJob(queuedId);
+    await new Promise(r => setTimeout(r, 0));
+    check('cancelling a still-queued job settles it', outcomes, [{ ok: false, cancelled: true }]);
+  }
+
+  // Settling twice would resolve one promise and silently drop the other job's
+  // outcome onto it.
+  {
+    const q = build();
+    const seen = [];
+    const job = { onSettled: o => seen.push(o) };
+    q.settleJob(job, { ok: true, downloadId: 1 });
+    q.settleJob(job, { ok: false, cancelled: true });
+    check('a job settles exactly once', seen, [{ ok: true, downloadId: 1 }]);
+  }
+
+  check('a job with no handler is harmless', (() => {
+    const q = build();
+    q.settleJob({}, { ok: true }); q.settleJob(null, { ok: true });
+    return 'no throw';
+  })(), 'no throw');
+
+  check('a throwing handler does not break the queue', (() => {
+    const q = build();
+    q.settleJob({ onSettled: () => { throw new Error('boom'); } }, { ok: true });
+    return 'no throw';
+  })(), 'no throw');
+
+  // The outcome mapping in runJob's finally reads meta.phase. These pin the two
+  // ways it can silently lie: a cancelled job reported as saved (the manifest
+  // then records it done and never retries), or a failure reported as success.
+  const src = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
+  ok('the cancel path mutates meta.phase, not just a copy',
+    /meta\.phase = 'cancelled';\s*\n\s*recordFinished\(meta, 'cancelled'\)/.test(src));
+  // Scoped to runJob's own finally block: searching the whole file would find
+  // some later pump() and pass no matter what the order actually is.
+  ok('settle happens before pump() inside runJob\'s finally', (() => {
+    const start = src.indexOf('if (ruleId != null) await removeHeaderRules(ruleId);');
+    // Comments stripped first: the comment above the call explains the ordering
+    // and contains the literal "pump()", which matched ahead of the real call
+    // and made this assertion pass no matter what the code did.
+    const block = src.slice(start, src.indexOf('\n}', start)).replace(/\/\/[^\n]*/g, '');
+    const s = block.indexOf('settleJob(job,'), p = block.indexOf('pump()');
+    return s !== -1 && p !== -1 && s < p;
+  })());
+  ok('every save path records its downloadId',
+    src.match(/await (?:saveBlob|mergeAndSave)\(/g).length ===
+    src.match(/meta\.downloadId = await (?:saveBlob|mergeAndSave)\(/g).length);
+  ok('saveBlob returns the id it waited on', /if \(state !== 'complete'\)[^}]*\n\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*return downloadId;/.test(src));
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);

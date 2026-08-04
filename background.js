@@ -1250,6 +1250,9 @@ function saveBlob(blob, filename) {
       const downloadId = await saveViaOffscreenAnchor(filename, blob.size);
       const { state, error } = await waitForDownloadEnd(downloadId);
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
+      // Returned so a bulk run can record it: the downloads API is the only way
+      // to ask whether a file is still on disk, and it answers by id.
+      return downloadId;
     } finally {
       await cache.delete(key);
       await sendToOffscreen({ type: 'MERGE_CLEANUP' });
@@ -1493,6 +1496,7 @@ function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving) {
       const downloadId = await saveViaOffscreenAnchor(`${filename}.mp4`, result.size);
       const { state, error } = await waitForDownloadEnd(downloadId);
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
+      return downloadId;   // see saveBlob — the manifest's disk check needs it
     } finally {
       await Promise.all([cache.delete(videoKey), cache.delete(audioKey)]).catch(() => {});
       await sendToOffscreen({ type: 'MERGE_CLEANUP' }).catch(() => {});
@@ -1524,13 +1528,37 @@ function updateJob(jobId, patch) {
 
 // mode: undefined = normal combined download (merged, costs a credit);
 // 'video' | 'audio' = single-rendition free download (no merge, no credit).
-function enqueueDownload({ quality, filename, tabId, platform, label, mode }) {
+function enqueueDownload({ quality, filename, tabId, platform, label, mode, onSettled }) {
   const jobId = ++jobSeq;
   const meta = { filename, platform, label, mode, percent: 0, phase: 'queued', speed: '' };
-  downloadQueue.push({ jobId, quality, filename, tabId, mode, meta });
+  downloadQueue.push({ jobId, quality, filename, tabId, mode, meta, onSettled });
   broadcast({ type: 'QUEUE_ADD', item: { jobId, ...meta, state: 'queued' } });
   pump();
   return jobId;
+}
+
+// Promise form for callers that must wait for a job to finish — the bulk
+// orchestrator downloads one lesson at a time and needs to know the outcome
+// before it records the manifest entry and moves on.
+//
+// It resolves rather than rejects on failure: a bulk run turns one lesson's
+// failure into a named record and carries on, and an unhandled rejection
+// escaping into the queue would take the whole course down with it.
+function enqueueDownloadAwaited(opts) {
+  return new Promise((resolve) => {
+    enqueueDownload({ ...opts, onSettled: resolve });
+  });
+}
+
+// Settling is what a bulk run is blocked on, so it must happen exactly once per
+// job and on EVERY path a job can leave by — including the two that never reach
+// runJob at all (see cancelJob and forgetTabVideos). A job that ends without
+// settling does not fail the run; it hangs it, with no error and no progress.
+function settleJob(job, outcome) {
+  const fn = job?.onSettled;
+  if (!fn) return;
+  job.onSettled = null;   // once, whichever path gets here first
+  try { fn(outcome); } catch { /* a caller's handler must not break the queue */ }
 }
 
 function pump() {
@@ -1540,7 +1568,8 @@ function pump() {
   }
 }
 
-async function runJob({ jobId, quality, filename, tabId, mode }) {
+async function runJob(job) {
+  const { jobId, quality, filename, tabId, mode } = job;
   const cancelled = [false];
   const meta = { jobId, filename, platform: quality.platform, mode, percent: 0, phase: 'starting', speed: '' };
   activeJobs.set(jobId, { cancel: () => { cancelled[0] = true; }, meta });
@@ -1619,7 +1648,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (isCancelled()) throw new Error('Cancelled');
       setPct(97, 'saving');
-      await saveBlob(blob, mode === 'audio' ? `${filename}.m4a` : `${filename}.mp4`);
+      meta.downloadId = await saveBlob(blob, mode === 'audio' ? `${filename}.m4a` : `${filename}.mp4`);
 
     } else if (quality.kind === 'mp4') {
       const blob = await downloadDirect(quality.videoUrl, {
@@ -1627,7 +1656,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         onProgress: (done, total, bytes) => setPct(total ? (done / total) * 95 : 50, 'downloading', bytes)
       });
       setPct(97, 'saving');
-      await saveBlob(blob, `${filename}.mp4`);
+      meta.downloadId = await saveBlob(blob, `${filename}.mp4`);
 
     } else if (quality.kind === 'hls') {
       const videoBlob = await downloadRendition(quality.videoUrl, {
@@ -1636,7 +1665,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (!quality.audioUrl) {
         setPct(96, 'saving');
-        await saveBlob(videoBlob, `${filename}.mp4`);
+        meta.downloadId = await saveBlob(videoBlob, `${filename}.mp4`);
       } else {
         const audioBlob = await downloadRendition(quality.audioUrl, {
           isCancelled, ...netOpts, mimeType: 'audio/mp4',
@@ -1644,7 +1673,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
       }
 
     } else if (quality.kind === 'vimeo-json') {
@@ -1654,7 +1683,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (!quality.audioTrackId) {
         setPct(96, 'saving');
-        await saveBlob(videoBlob, `${filename}.mp4`);
+        meta.downloadId = await saveBlob(videoBlob, `${filename}.mp4`);
       } else {
         const audioBlob = await downloadVimeoTrack(quality.playlistUrl, 'audio', quality.audioTrackId, {
           isCancelled, ...netOpts,
@@ -1662,7 +1691,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
       }
 
     } else if (quality.kind === 'merge') {
@@ -1676,7 +1705,7 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
       });
       if (isCancelled()) throw new Error('Cancelled');
       setPct(82, 'merging');
-      await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+      meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
     }
 
     meta.percent = 100; meta.phase = 'done'; meta.speed = '';
@@ -1688,7 +1717,12 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
 
   } catch (e) {
     if (e.message === 'Cancelled') {
-      recordFinished({ ...meta, phase: 'cancelled' }, 'cancelled');
+      // Mutated, not just spread into recordFinished: the finally below reads
+      // meta.phase to decide the outcome, and a cancelled job left reading
+      // 'downloading' would settle as a success — which a bulk run would record
+      // in the manifest as saved and never retry.
+      meta.phase = 'cancelled';
+      recordFinished(meta, 'cancelled');
       broadcast({ type: 'QUEUE_CANCELLED', jobId });
     } else {
       // Not every fetch in a job runs through fetchWithRetry — progressive
@@ -1708,6 +1742,12 @@ async function runJob({ jobId, quality, filename, tabId, mode }) {
   } finally {
     if (ruleId != null) await removeHeaderRules(ruleId);
     activeJobs.delete(jobId);
+    // Settle BEFORE pump(), so an awaiting bulk run resumes before the next job
+    // starts. Settling after would let the two interleave, which is exactly what
+    // downloading a course one lesson at a time exists to prevent.
+    settleJob(job, meta.phase === 'error' ? { ok: false, error: meta.error }
+      : meta.phase === 'cancelled' ? { ok: false, cancelled: true }
+      : { ok: true, downloadId: meta.downloadId ?? null });
     pump();
   }
 }
@@ -1716,7 +1756,14 @@ function cancelJob(jobId) {
   const active = activeJobs.get(jobId);
   if (active) { active.cancel(); return; }
   const idx = downloadQueue.findIndex(q => q.jobId === jobId);
-  if (idx >= 0) { downloadQueue.splice(idx, 1); broadcast({ type: 'QUEUE_CANCELLED', jobId }); }
+  if (idx >= 0) {
+    const [dropped] = downloadQueue.splice(idx, 1);
+    // A job cancelled while still queued never reaches runJob, so runJob's
+    // finally never runs and nothing else would ever settle it. An awaiting
+    // bulk run would then wait forever — no error, no progress, no way out.
+    settleJob(dropped, { ok: false, cancelled: true });
+    broadcast({ type: 'QUEUE_CANCELLED', jobId });
+  }
 }
 
 // ── Message router ─────────────────────────────────────────────────────────────
