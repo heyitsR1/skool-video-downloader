@@ -220,6 +220,79 @@ function courseTreeFromPageProps(pageProps, group, courseSlug) {
 }
 
 // ── Output paths ──────────────────────────────────────────────────────────────
+// Paths are relative to the browser's download directory, so every segment must
+// be legal on Windows and macOS alike, and must stay short enough that a deep
+// course does not blow a path-length limit.
+
+function sanitizeForFs(name) {
+  return String(name || '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Windows refuses these names with or without an extension, in any case. A
+// course or lesson titled after one would fail every download under it with an
+// error the user has no way to act on, so it gets a suffix instead.
+const RESERVED_SEGMENTS = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+
+// Trailing dots are silently stripped by Windows, which would turn two distinct
+// lesson titles into one path — so they are dropped here, where the collision
+// check can still see it.
+function capSegment(name, max, fallback) {
+  // Cap by character, not by UTF-16 unit: a bare .slice() can cut an emoji in
+  // half and leave a lone surrogate in the filename.
+  let clean = [...sanitizeForFs(name)].slice(0, max).join('').trim();
+  clean = clean.replace(/\.+$/, '').trim();
+  if (!clean) return fallback;
+  return RESERVED_SEGMENTS.test(clean) ? `${clean}_` : clean;
+}
+
+// Two digits normally, three once a course has 100+ siblings, so a file browser
+// sorts lessons in course order rather than lexically (…, 10, 100, 11, …).
+function padIndex(n, total) {
+  return String(n).padStart(Number(total) >= 100 ? 3 : 2, '0');
+}
+
+// Claims `candidate` in `used`, appending " (2)", " (3)" … before `suffix` until
+// it is free. Shared by the lesson stems and the attachments hanging off them.
+function claimUnique(used, stem, suffix) {
+  let candidate = `${stem}${suffix}`;
+  if (!used) return candidate;
+  let n = 2;
+  while (used.has(candidate)) candidate = `${stem} (${n++})${suffix}`;
+  used.add(candidate);
+  return candidate;
+}
+
+// Reserves and returns the extensionless stem for one lesson. Video, notes and
+// attachments all hang off it, so a single collision check covers every asset.
+function bulkLessonBase(parts, usedBases) {
+  const { courseTitle, moduleIdx, moduleTitle, moduleCount, lessonIdx, lessonTitle, lessonCount } = parts;
+  const course = capSegment(courseTitle, 100, 'skool-course');
+  const dir = moduleIdx
+    ? `${course}/${padIndex(moduleIdx, moduleCount)} ${capSegment(moduleTitle, 100, 'module')}`
+    : course;
+  const stem = `${padIndex(lessonIdx, lessonCount)} ${capSegment(lessonTitle, 120, 'lesson')}`;
+  return claimUnique(usedBases, `${dir}/${stem}`, '');
+}
+
+function extensionOf(fileName) {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(fileName || ''));
+  return m ? m[1] : null;
+}
+
+// The label is what the user sees, so it names the file; the extension comes
+// from the real file name, because a label often has none or a wrong one.
+//
+// Two attachments on one lesson may share a label. `usedNames` is optional so
+// the pure name is still testable, but the writer must pass one — otherwise the
+// second file quietly overwrites the first.
+function attachmentFilename(base, file, usedNames) {
+  const label = capSegment(file?.label, 80, 'attachment');
+  const ext = extensionOf(file?.fileName);
+  return claimUnique(usedNames, `${base} - ${label}`, ext ? `.${ext}` : '');
+}
 
 // ── Lesson notes ──────────────────────────────────────────────────────────────
 
@@ -235,5 +308,6 @@ if (typeof module !== 'undefined' && module.exports) {
     KIND, SOURCE,
     parseClassroomUrl, lessonUrlFor, courseUrlFor,
     courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps,
+    sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
   };
 }
