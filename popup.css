@@ -366,3 +366,19 @@ body {
 .bulk__line { font-size: 10.5px; color: var(--muted); min-height: 14px; margin-top: 6px; }
 .bulk__detail { margin: 6px 0 0; padding-left: 16px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) { .bulk__bar-fill { transition: none; } }
+
+/* Beta marker. The course-backup panel carries one in every state, and the plan
+   card repeats it — a feature someone is paying for must not be labelled Beta in
+   only one of the two places they meet it. */
+.bulk__head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.bulk__label {
+  font-size: 10.5px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.bulk__beta, .plan-card__beta {
+  display: inline-block; padding: 0 6px; border-radius: 8px;
+  font-size: 9.5px; font-weight: 700; line-height: 15px;
+  text-transform: uppercase; letter-spacing: .4px;
+  background: var(--accent-soft); color: var(--accent-strong);
+}
+.plan-card__beta { vertical-align: middle; }

@@ -44,6 +44,10 @@
     <!-- Whole-course backup. Shown only on a classroom course page; the panel is
          a view over background state, so closing the popup never stops a run. -->
     <section id="bulk" class="bulk hidden">
+      <div class="bulk__head">
+        <span class="bulk__label" data-i18n="bulkPanelTitle">Course backup</span>
+        <span class="bulk__beta" data-i18n="bulkBeta">Beta</span>
+      </div>
       <div id="bulk-idle" class="hidden">
         <div class="bulk__course" id="bulk-course-title"></div>
         <div class="bulk__meta" id="bulk-course-meta"></div>
@@ -209,6 +213,7 @@
         </div>
         <ul class="plan-card__list">
           <li data-i18n="planFeatureUnlimited">Unlimited downloads — no weekly cap</li>
+          <li><span data-i18n="planFeatureBulk">Back up a whole course in one run — videos, notes &amp; files</span> <span class="plan-card__beta" data-i18n="bulkBeta">Beta</span></li>
           <li data-i18n="planFeatureResolution">Every resolution the source offers</li>
           <li data-i18n="planFeaturePlatforms">Skool, Loom, Vimeo, YouTube &amp; Wistia</li>
           <li data-i18n="planFeatureSupport">Priority email support</li>

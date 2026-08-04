@@ -579,5 +579,14 @@
         "content": "$1"
       }
     }
+  },
+  "planFeatureBulk": {
+    "message": "Back up a whole course in one run — videos, notes & files"
+  },
+  "bulkPanelTitle": {
+    "message": "Course backup"
+  },
+  "bulkBeta": {
+    "message": "Beta"
   }
 }
