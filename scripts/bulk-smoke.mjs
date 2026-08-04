@@ -392,5 +392,55 @@ check('a bracket in a link label does not break the link', bulk.notesDocument({
   title: 'H', lessonUrl: 'https://u', markdown: '', links: [{ label: 'A [B] C', url: 'https://p' }],
 }), '# H\n\n## Links\n\n- [A \\[B\\] C](https://p)\n\n---\nLesson: https://u\n');
 
+console.log('\nparseResources');
+{
+  const mixed = JSON.stringify([
+    { title: 'Workbook', file_id: 'a'.repeat(32), file_name: 'workbook.pdf', file_content_type: 'application/pdf' },
+    { title: 'Related Post', link: 'https://example.com/post' },
+  ]);
+  const r = bulk.parseResources(mixed);
+  check('one file', r.files.length, 1);
+  check('one link', r.links.length, 1);
+  check('nothing dropped', r.dropped, 0);
+  check('file fields', r.files[0], { fileId: 'a'.repeat(32), label: 'Workbook', fileName: 'workbook.pdf', contentType: 'application/pdf' });
+  check('link fields', r.links[0], { label: 'Related Post', url: 'https://example.com/post' });
+
+  check('empty array', bulk.parseResources('[]'), { files: [], links: [], dropped: 0 });
+  check('absent', bulk.parseResources(null), { files: [], links: [], dropped: 0 });
+
+  // A malformed entry is counted, never silently vanished.
+  const bad = bulk.parseResources(JSON.stringify([{ title: 'Neither' }, { file_id: 'too-short' }]));
+  check('malformed entries are counted', bad.dropped, 2);
+  check('and none are kept', bad.files.length + bad.links.length, 0);
+
+  check('unparseable string is one drop', bulk.parseResources('{not json').dropped, 1);
+  check('a JSON object rather than an array is one drop', bulk.parseResources('{"a":1}').dropped, 1);
+  check('url is accepted as well as link',
+    bulk.parseResources(JSON.stringify([{ title: 'T', url: 'https://u' }])).links[0].url, 'https://u');
+  check('file name stands in for a missing label',
+    bulk.parseResources(JSON.stringify([{ file_id: 'b'.repeat(32), file_name: 'notes.txt' }])).files[0].label, 'notes.txt');
+  check('a non-http link is dropped, not written into a file',
+    bulk.parseResources(JSON.stringify([{ title: 'X', link: 'javascript:alert(1)' }])).dropped, 1);
+
+  // The same file listed twice would be fetched twice and written to two names,
+  // and the manifest keys assets by fileId, so the second has nowhere to record.
+  const dup = bulk.parseResources(JSON.stringify([
+    { title: 'Workbook', file_id: 'c'.repeat(32), file_name: 'w.pdf' },
+    { title: 'Workbook again', file_id: 'c'.repeat(32), file_name: 'w.pdf' },
+  ]));
+  check('a repeated file_id is kept once', dup.files.length, 1);
+  check('the first labelling of it wins', dup.files[0].label, 'Workbook');
+  check('a duplicate is not counted as malformed', dup.dropped, 0);
+
+  // Labels and URLs are written into Markdown, where a newline ends the line.
+  check('a newline in a label is flattened',
+    bulk.parseResources(JSON.stringify([{ title: 'Two\nLines', link: 'https://u' }])).links[0].label,
+    'Two Lines');
+  check('a newline in a URL is a drop, not a broken link',
+    bulk.parseResources(JSON.stringify([{ title: 'X', link: 'https://u\nevil' }])).dropped, 1);
+  check('a tab in a file label is flattened',
+    bulk.parseResources(JSON.stringify([{ title: 'A\tB', file_id: 'd'.repeat(32) }])).files[0].label, 'A B');
+}
+
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : '✓ all assertions hold'}`);
 process.exit(failures ? 1 : 0);

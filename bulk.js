@@ -412,6 +412,61 @@ function notesDocument({ title, lessonUrl, markdown, links }) {
 }
 
 // ── Attachments ───────────────────────────────────────────────────────────────
+// resources is a JSON string, and its entries are either a downloadable file
+// (file_id) or a plain external link. Entries matching neither are counted in
+// `dropped` rather than discarded quietly, so a schema change shows up as a
+// number we can report instead of attachments that simply stop appearing.
+
+const FILE_ID_RE = /^[0-9a-f]{32}$/i;
+
+// Labels end up in filenames and in a Markdown list, where a newline or a tab
+// would end the line early and split one entry into two.
+function flattenLabel(v) {
+  return typeof v === 'string' && v.replace(/\s+/g, ' ').trim() ? v.replace(/\s+/g, ' ').trim() : null;
+}
+
+function parseResources(raw) {
+  const out = { files: [], links: [], dropped: 0 };
+  if (raw == null || raw === '') return out;
+
+  let arr;
+  try { arr = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+  catch { return { files: [], links: [], dropped: 1 }; }
+  if (!Array.isArray(arr)) return { files: [], links: [], dropped: 1 };
+
+  // The manifest keys a lesson's assets by fileId, so the same file listed twice
+  // has one slot to record in — and would otherwise be fetched twice and written
+  // to two names. The first labelling of it wins.
+  const seenFileIds = new Set();
+
+  for (const entry of arr) {
+    if (!entry || typeof entry !== 'object') { out.dropped++; continue; }
+
+    const label = [entry.title, entry.label, entry.file_name].map(flattenLabel).find(Boolean) || null;
+    const fileId = typeof entry.file_id === 'string' && FILE_ID_RE.test(entry.file_id) ? entry.file_id : null;
+    // http(s) only, and no whitespace — a resource entry is not a place to accept
+    // an arbitrary scheme, and a URL with a newline in it breaks the Markdown
+    // link it gets written into.
+    const url = [entry.link, entry.url]
+      .find(v => typeof v === 'string' && /^https?:\/\//i.test(v) && !/\s/.test(v)) || null;
+
+    if (fileId) {
+      if (seenFileIds.has(fileId)) continue;
+      seenFileIds.add(fileId);
+      out.files.push({
+        fileId,
+        label: label || 'attachment',
+        fileName: typeof entry.file_name === 'string' ? entry.file_name : null,
+        contentType: typeof entry.file_content_type === 'string' ? entry.file_content_type : null,
+      });
+    } else if (url) {
+      out.links.push({ label: label || url, url });
+    } else {
+      out.dropped++;
+    }
+  }
+  return out;
+}
 
 // ── Manifest and resume ───────────────────────────────────────────────────────
 
@@ -425,5 +480,6 @@ if (typeof module !== 'undefined' && module.exports) {
     courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps,
     sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument,
+    FILE_ID_RE, parseResources,
   };
 }
