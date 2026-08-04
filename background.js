@@ -2152,7 +2152,11 @@ async function resolveBulkLesson(lesson) {
           detail: firstError ? `both playback hosts failed: ${String(firstError.message).slice(0, 90)}`
                              : 'playlist listed no renditions' };
       }
-      return { kind: 'qualities', qualities, platform: 'skool' };
+      // The description comes back on this same page, so a native lesson never
+      // needs the extra fetch the notes step would otherwise make.
+      const meta = findLessonMeta(pageProps, lesson.lessonId);
+      return { kind: 'qualities', qualities, platform: 'skool',
+        desc: typeof meta?.desc === 'string' ? meta.desc : null };
     }
 
     case SOURCE.LOOM:
@@ -2194,6 +2198,23 @@ async function resolveBulkLesson(lesson) {
       return { kind: 'skip', reason: 'unknown',
         detail: `unrecognised source ${String(lesson.sourceKind).slice(0, 40)}` };
   }
+}
+
+// The description of one lesson, read from that lesson's own page.
+//
+// The classroom tree carries `desc` only for the lesson Skool has selected, so
+// the scan sees no description for every other lesson in the course. Reading it
+// from the scan means a course backup saves notes for one lesson and silently
+// none for the rest — no error, no empty file, just absent notes that look like
+// lessons that never had any.
+//
+// Returns null when the page genuinely has no description, and throws only on a
+// transport failure, so a caller can tell "no notes" from "could not check".
+async function fetchLessonDesc(lesson) {
+  const { pageProps } = await fetchPageProps(lesson.lessonUrl);
+  if (!pageProps) return null;
+  const meta = findLessonMeta(pageProps, lesson.lessonId);
+  return typeof meta?.desc === 'string' ? meta.desc : null;
 }
 
 // The embed resolvers take a platform id, not a URL, so pull the id back out of
@@ -2535,9 +2556,10 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
     resumed: merged.filter(l => !lessonNeedsWork(l.priorAssets, want, [])).length,
   }));
 
+  const runStartedAt = Date.now();
   await setBulkState({
     phase: 'running', group, courseSlug, courseTitle: scan.courseTitle,
-    total, done: 0, currentTitle: null, want, startedAt: Date.now(),
+    total, done: 0, currentTitle: null, want, startedAt: runStartedAt,
   });
 
   // Reserve every base path up front so numbering and collision handling do not
@@ -2621,8 +2643,8 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
     await setBulkState({ done, currentTitle: lesson.title, phase: 'running' });
   }
 
+  const course = capSegment(scan.courseTitle, 100, 'skool-course');
   if (youtubeIndex.length) {
-    const course = capSegment(scan.courseTitle, 100, 'skool-course');
     try {
       await saveTextFile(`${course}/_youtube-lessons.txt`,
         youtubeIndex.map(y => `${y.title}\n${y.url}\n`).join('\n'), 'text/plain');
@@ -2646,10 +2668,30 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
   // all (an unreadable resource list, a missing YouTube index), which would
   // otherwise leave no trace anywhere.
   const tallied = describeTally(runTally);
+  const examples = tallyExamples(runTally);
   if (tallied !== 'none') {
     bulkLog(`fail reasons: ${tallied}`);
-    const examples = tallyExamples(runTally);
     if (examples) bulkLog(`e.g. ${examples}`);
+  }
+
+  // A per-lesson log in the course folder. The debug log a report carries is ten
+  // lines for the whole browser session, which cannot describe a 40-lesson run —
+  // and "it missed a section" is unanswerable without knowing what the run
+  // decided for each lesson. Written from the manifest, so it describes what is
+  // actually on disk rather than what this run happened to touch.
+  try {
+    await saveTextFile(`${course}/_download-log.txt`, runLogDocument({
+      courseTitle: scan.courseTitle, group, courseSlug,
+      version: chrome.runtime.getManifest().version,
+      startedAt: runStartedAt, finishedAt: Date.now(), want,
+      lessons: merged, manifest: await loadManifest(group, courseSlug),
+      summary, reasons: tallied, examples, cancelled,
+    }), 'text/plain');
+  } catch (e) {
+    // Never fatal: the run's real output is already on disk. But a run that
+    // could not write its own log is worth one line, because the next question
+    // asked will be "where is the log".
+    bulkLog(`run log not written: ${String(e.message).slice(0, 100)}`);
   }
 
   await setBulkState({ phase: cancelled ? 'cancelled' : 'completed', done, summary });
@@ -2663,6 +2705,9 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
 async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtubeIndex, runTally }) {
   const base = lesson.base;
   let status = 'saved', reason = null;
+  // A description picked up while resolving the video, so the notes step below
+  // does not fetch the same page a second time.
+  let resolvedDesc = null;
 
   if (want.video && !isSettled(lesson.priorAssets.video)) {
     const resolved = await resolveBulkLesson(lesson);
@@ -2692,6 +2737,7 @@ async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtu
       await recordAsset(group, courseSlug, lesson.lessonId, { video: { skipped: 'text' } });
 
     } else {
+      resolvedDesc = resolved.desc ?? null;
       const quality = pickBestQuality(resolved.qualities);
       await setBulkState({ lastLine: 'downloading video…' });
       const out = await enqueueDownloadAwaited({
@@ -2728,7 +2774,21 @@ async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtu
   if (bulkAbort.pause || bulkAbort.cancel) return { status, reason };
 
   if (want.notes && !isSettled(lesson.priorAssets.notes)) {
-    const markdown = descToMarkdown(lesson.descRaw);
+    // The scan's copy is only trustworthy when it is non-empty: the classroom
+    // tree omits `desc` for every lesson except the selected one, so an absent
+    // description there means "not included", not "none". Fetching the lesson's
+    // own page is the only way to tell those apart.
+    let descRaw = lesson.descRaw || resolvedDesc;
+    if (!descRaw) {
+      try {
+        descRaw = await fetchLessonDesc(lesson);
+      } catch (e) {
+        // Not a lesson-level failure — the video and attachments may well have
+        // saved. Tallied so a run that lost notes says so somewhere.
+        tallyReason(runTally, 'notes-unreachable', `lesson "${String(lesson.title).slice(0, 40)}": ${e.message}`);
+      }
+    }
+    const markdown = descToMarkdown(descRaw);
     if (markdown || resources.links.length) {
       const doc = notesDocument({ title: lesson.title, lessonUrl: lesson.lessonUrl, markdown, links: resources.links });
       const id = await saveTextFile(`${base}.md`, doc, 'text/markdown');

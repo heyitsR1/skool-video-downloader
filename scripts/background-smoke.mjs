@@ -442,12 +442,13 @@ console.log('\nlesson media resolution:');
   const build = (deps = {}) => {
     const code = extract('background.js', ['resolveBulkLesson', 'embedSourceId']);
     return new Function('d', `
-      const { SOURCE, fetchPageProps, nativePlaybackFrom, resolveQualities, bulkPathOf } = d;
+      const { SOURCE, fetchPageProps, nativePlaybackFrom, resolveQualities, bulkPathOf, findLessonMeta } = d;
       ${code}
       return { resolveBulkLesson, embedSourceId };
     `)({
       SOURCE: bulk.SOURCE,
       nativePlaybackFrom: bulk.nativePlaybackFrom,
+      findLessonMeta: bulk.findLessonMeta,
       bulkPathOf: u => { try { return new URL(u).pathname; } catch { return String(u); } },
       fetchPageProps: async () => ({ pageProps: null, status: 500, finalUrl: 'https://x/y' }),
       resolveQualities: async () => ({ qualities: [] }),
@@ -865,7 +866,7 @@ console.log('\norchestrator:');
       chrome: { storage: { session: {
         get: async k => (k in session ? { [k]: structuredClone(session[k]) } : {}),
         set: async o => { for (const [k, v] of Object.entries(o)) session[k] = structuredClone(v); },
-      } }, runtime: { sendMessage: async () => {} } },
+      } }, runtime: { sendMessage: async () => {}, getManifest: () => ({ version: '1.5.0' }) } },
       BulkError: class extends Error { constructor(c, m) { super(m); this.code = c; } },
       bulkLog: m => logged.push(m),
       scanCourse: deps.scanCourse || (async () => ({
@@ -885,6 +886,9 @@ console.log('\norchestrator:');
       isSettled: bulk.isSettled, SETTLED_SKIP_KINDS: bulk.SETTLED_SKIP_KINDS,
       bulkLessonBase: bulk.bulkLessonBase, capSegment: bulk.capSegment,
       shouldFlattenModules: bulk.shouldFlattenModules,
+      findLessonMeta: bulk.findLessonMeta, runLogDocument: bulk.runLogDocument,
+      fetchLessonDesc: deps.fetchLessonDesc || (async () => null),
+      loadManifest: deps.loadManifest || (async () => ({ lessons: {} })),
       parseResources: bulk.parseResources, descToMarkdown: bulk.descToMarkdown,
       notesDocument: bulk.notesDocument, attachmentFilename: bulk.attachmentFilename,
       reasonTally: bulk.reasonTally, tallyReason: bulk.tallyReason,
@@ -898,7 +902,7 @@ console.log('\norchestrator:');
       const { chrome, BulkError, bulkLog, scanCourse, pruneDeletedAssets, resolveBulkLesson,
               enqueueDownloadAwaited, recordAsset, saveTextFile, saveYoutubeStub, saveAttachment,
               mergeManifest, lessonNeedsWork, isSettled, SETTLED_SKIP_KINDS, bulkLessonBase, capSegment,
-              shouldFlattenModules,
+              shouldFlattenModules, findLessonMeta, runLogDocument, fetchLessonDesc, loadManifest,
               parseResources, descToMarkdown, notesDocument, attachmentFilename, reasonTally, tallyReason,
               describeTally, tallyExamples, bulkRunStartLine, bulkRunEndLine, runSummary, flags } = d;
       ${code.replace(/\bbulkRunActive\b/g, 'flags.bulkRunActive')}
@@ -954,6 +958,101 @@ console.log('\norchestrator:');
         o.calls.enqueued.map(e => e.filename),
         ['C/01 Module 1/01 Lesson 1', 'C/02 Module 2/01 Lesson 2', 'C/02 Module 2/02 Lesson 3']);
     }
+  }
+
+  // The classroom tree carries `desc` only for the lesson Skool has selected, so
+  // every other lesson scans as having no description. Trusting the scan saves
+  // notes for one lesson per course and silently none for the rest.
+  {
+    const textLesson = (n) => ({ lessonId: `l${n}`, title: `Lesson ${n}`, moduleIdx: null,
+      moduleTitle: null, lessonIdx: n, sourceKind: 'text', sourceRef: null,
+      lessonUrl: `https://u/${n}`, descRaw: null, resourcesRaw: null });
+    {
+      const fetched = [];
+      const o = build({
+        scanCourse: async () => ({ courseTitle: 'C', shape: 'flat', moduleCount: 0,
+          lessons: [textLesson(1), textLesson(2)] }),
+        resolveBulkLesson: async () => ({ kind: 'notes-only' }),
+        fetchLessonDesc: async (l) => { fetched.push(l.lessonId); return `[{"type":"paragraph","content":[{"type":"text","text":"notes for ${l.lessonId}"}]}]`; },
+      });
+      await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { notes: true } });
+      check('a lesson with no description in the scan is read from its own page', fetched, ['l1', 'l2']);
+      const notes = o.calls.text.filter(t => t.path.endsWith('.md'));
+      check('and both lessons get notes', notes.map(t => t.path), ['C/01 Lesson 1.md', 'C/02 Lesson 2.md']);
+      ok('with each lesson\'s own text in its own file', notes[1].text.includes('notes for l2'));
+    }
+    // A description the scan already has is used as-is: refetching every lesson
+    // page when the answer is in hand is a round trip per lesson for nothing.
+    {
+      const fetched = [];
+      const o = build({
+        scanCourse: async () => ({ courseTitle: 'C', shape: 'flat', moduleCount: 0,
+          lessons: [{ ...textLesson(1), descRaw: '[{"type":"paragraph","content":[{"type":"text","text":"already here"}]}]' }] }),
+        resolveBulkLesson: async () => ({ kind: 'notes-only' }),
+        fetchLessonDesc: async (l) => { fetched.push(l.lessonId); return null; },
+      });
+      await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { notes: true } });
+      check('a description already in the scan is not refetched', fetched, []);
+      ok('and is what gets written', o.calls.text[0].text.includes('already here'));
+    }
+    // Losing the notes fetch must not fail the lesson — its video and files may
+    // have saved — but it must not vanish either.
+    {
+      const o = build({
+        scanCourse: async () => ({ courseTitle: 'C', shape: 'flat', moduleCount: 0, lessons: [textLesson(1)] }),
+        resolveBulkLesson: async () => ({ kind: 'notes-only' }),
+        fetchLessonDesc: async () => { throw new Error('connection reset'); },
+      });
+      await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { notes: true } });
+      ok('an unreachable notes page is reported', /notes-unreachable/.test(o.logged.join(' ')));
+      ok('and does not fail the lesson', /1 saved/.test(o.logged.join(' ')));
+    }
+  }
+
+  // A native lesson already fetches its own page to resolve playback, and that
+  // page carries the description too. Fetching it again for the notes would
+  // double the network cost of the common case for data already in hand.
+  {
+    const fetched = [];
+    const o = build({
+      scanCourse: async () => ({ courseTitle: 'C', shape: 'flat', moduleCount: 0,
+        lessons: [{ lessonId: 'l1', title: 'A', moduleIdx: null, moduleTitle: null, lessonIdx: 1,
+          sourceKind: 'skool-native', sourceRef: 'v', lessonUrl: 'https://u', descRaw: null, resourcesRaw: null }] }),
+      resolveBulkLesson: async () => ({ kind: 'qualities', qualities: [{ height: 720 }], platform: 'skool',
+        desc: '[{"type":"paragraph","content":[{"type":"text","text":"from the video page"}]}]' }),
+      fetchLessonDesc: async (l) => { fetched.push(l.lessonId); return null; },
+    });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true, notes: true } });
+    check('the video page is not fetched twice for the notes', fetched, []);
+    ok('and its description is what gets written',
+      o.calls.text.find(t => t.path.endsWith('.md')).text.includes('from the video page'));
+  }
+
+  // The run log. "It missed a section" is unanswerable without a per-lesson
+  // record, and the ten-line debug log cannot hold one.
+  {
+    const o = build({
+      scanCourse: async () => ({ courseTitle: 'C', shape: 'flat', moduleCount: 0,
+        lessons: [
+          { lessonId: 'l1', title: 'Has video', moduleIdx: null, moduleTitle: null, lessonIdx: 1,
+            sourceKind: 'skool-native', sourceRef: 'v', lessonUrl: 'https://u/1', descRaw: null, resourcesRaw: null },
+          { lessonId: 'l2', title: 'Produces nothing', moduleIdx: null, moduleTitle: null, lessonIdx: 2,
+            sourceKind: 'text', sourceRef: null, lessonUrl: 'https://u/2', descRaw: null, resourcesRaw: null },
+        ] }),
+      resolveBulkLesson: async (l) => l.sourceKind === 'text' ? { kind: 'notes-only' }
+        : { kind: 'qualities', qualities: [{ height: 720 }], platform: 'skool' },
+      loadManifest: async () => ({ lessons: { l1: { status: 'saved', assets: { video: { path: 'C/01 Has video.mp4' } } } } }),
+    });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true, notes: true } });
+    const log = o.calls.text.find(t => t.path === 'C/_download-log.txt');
+    ok('a run writes a log to the course folder', !!log);
+    ok('naming the course', log.text.includes('C (g1/s1)'));
+    ok('and the extension version', log.text.includes('v1.5.0'));
+    ok('a lesson that saved appears with its path', log.text.includes('C/01 Has video.mp4'));
+    // The whole point: a lesson that wrote no file is the one the user asks
+    // about, so it must be in the log rather than absent from it.
+    ok('a lesson that produced nothing still appears', log.text.includes('Produces nothing'));
+    ok('and is not silently marked saved', /Produces nothing[\s\S]{0,200}notes  not attempted/.test(log.text));
   }
 
   // mode must be absent. A truthy unknown value reads as "single-rendition,

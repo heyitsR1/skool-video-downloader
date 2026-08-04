@@ -236,6 +236,32 @@ function courseTreeFromPageProps(pageProps, group, courseSlug) {
   return { ok: true, courseTitle, shape, moduleCount, lessons };
 }
 
+// A lesson's own metadata, found by id anywhere in a course tree.
+//
+// This exists because `metadata.desc` is NOT populated for every lesson in the
+// classroom page's tree — only for the one lesson Skool has selected. Every
+// other lesson reports no description at all, so notes read from the course
+// scan are notes for at most one lesson per course, and the rest are silently
+// empty. The lesson's own page carries its description, and this finds it in
+// the tree that page returns.
+function findLessonMeta(pageProps, lessonId) {
+  const root = pageProps?.renderData?.course ?? pageProps?.course ?? null;
+  if (!root || !lessonId) return null;
+  const seen = new Set();
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 10 || seen.has(node)) return null;
+    seen.add(node);
+    const self = node.course ?? node;
+    if (self && self.id === lessonId) return nodeMeta(node);
+    for (const kid of nodeKids(node)) {
+      const hit = walk(kid, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return walk(root, 0);
+}
+
 // ── Output paths ──────────────────────────────────────────────────────────────
 // Paths are relative to the browser's download directory, so every segment must
 // be legal on Windows and macOS alike, and must stay short enough that a deep
@@ -450,6 +476,67 @@ function notesDocument({ title, lessonUrl, markdown, links }) {
     out.push('');
   }
   out.push('---', `Lesson: ${lessonUrl}`, '');
+  return out.join('\n');
+}
+
+// ── Run log ───────────────────────────────────────────────────────────────────
+// A per-lesson record written to the course folder as _download-log.txt.
+//
+// It exists because the debug log a problem report carries is 10 lines total,
+// which cannot describe a 40-lesson run — and the symptom users actually report
+// is "it missed a section", which is unanswerable without knowing what the run
+// decided for each lesson. This file makes the run self-describing: every lesson
+// appears, including the ones that produced no file, and says why.
+//
+// It is written to the course folder rather than kept in storage so a user can
+// attach it without the extension being involved at all.
+
+function assetLine(label, slot) {
+  if (!slot || typeof slot !== 'object') return `${label.padEnd(6)} not attempted`;
+  if (slot.path) return `${label.padEnd(6)} saved  ${slot.path}`;
+  if (slot.skipped) return `${label.padEnd(6)} skipped (${slot.skipped})`;
+  return `${label.padEnd(6)} not attempted`;
+}
+
+function runLogDocument({ courseTitle, group, courseSlug, version, startedAt, finishedAt,
+                          want, lessons, manifest, summary, reasons, examples, cancelled }) {
+  const iso = (t) => { try { return new Date(t).toISOString(); } catch { return String(t); } };
+  const records = (manifest && typeof manifest === 'object' && manifest.lessons) || {};
+  const out = [
+    'Skool Video Downloader — course backup log',
+    '',
+    `Course:     ${courseTitle} (${group}/${courseSlug})`,
+    `Extension:  v${version || 'unknown'}`,
+    `Started:    ${iso(startedAt)}`,
+    `Finished:   ${iso(finishedAt)}${cancelled ? '  (cancelled)' : ''}`,
+    `Requested:  ${describeWant(want)}`,
+    '',
+  ];
+  if (summary) {
+    out.push(`Result:     ${summary.total} lessons — ${summary.saved} saved, `
+      + `${summary.skipped} skipped, ${summary.failed} failed`, '');
+  }
+  // Every lesson appears, including ones that produced nothing. A lesson missing
+  // from this list would be the same invisibility the file exists to remove.
+  for (const l of Array.isArray(lessons) ? lessons : []) {
+    const rec = records[l.lessonId] || {};
+    const a = normalizeAssets(rec);
+    out.push(`${l.moduleTitle ? `${l.moduleTitle} / ` : ''}${l.title}`);
+    out.push(`  id ${l.lessonId}  source=${l.sourceKind}${rec.status ? `  status=${rec.status}` : ''}`
+      + `${rec.reason ? ` (${rec.reason})` : ''}`);
+    out.push(`  ${assetLine('video', a.video)}`);
+    out.push(`  ${assetLine('notes', a.notes)}`);
+    const files = Object.entries(a.files || {});
+    if (!files.length) out.push('  files  none listed');
+    else for (const [id, slot] of files) out.push(`  ${assetLine('file', slot)}  [${id}]`);
+    out.push('');
+  }
+  if (reasons && reasons !== 'none') out.push(`Reasons:    ${reasons}`, '');
+  if (examples) out.push('Examples:', ...String(examples).split(' | ').map(e => `  ${e}`), '');
+  out.push('---',
+    'Send this file with a problem report if a lesson is missing or wrong.',
+    'It lists only what this backup did. It contains no account or payment data.',
+    '');
   return out.join('\n');
 }
 
@@ -707,9 +794,9 @@ if (typeof module !== 'undefined' && module.exports) {
     KIND, SOURCE,
     parseClassroomUrl, lessonUrlFor, courseUrlFor,
     NEXT_DATA_RE, extractPageProps,
-    courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps,
+    courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps, findLessonMeta,
     sanitizeForFs, capSegment, padIndex, shouldFlattenModules, bulkLessonBase, extensionOf, attachmentFilename,
-    descToMarkdown, notesDocument,
+    descToMarkdown, notesDocument, runLogDocument,
     FILE_ID_RE, parseResources,
     BULK_LINE_MAX_CHARS, clipLogLine, bulkRunStartLine, reasonTally, tallyReason, describeTally, tallyExamples, bulkRunEndLine,
     NATIVE_HOST_PRIMARY, NATIVE_HOST_FALLBACK, nativePlaybackFrom,

@@ -30,6 +30,9 @@ notes are written from.
   rather than a folder per file, named after the module you clicked.
 - YouTube-hosted lessons are collected into `_youtube-lessons.txt` for the
   download guide, since they cannot be saved in the browser.
+- Every run writes `_download-log.txt` in the course folder, listing each lesson
+  and what was saved, skipped or failed for it — including lessons that produced
+  no file. Send it with a problem report if something looks missing.
 
 ## 1.4.0 — 2026-08-01
 
