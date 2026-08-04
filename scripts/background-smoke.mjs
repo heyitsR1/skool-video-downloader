@@ -844,5 +844,173 @@ console.log('\nmanifest store and disk check:');
   }
 }
 
+// ── 11. The orchestrator ─────────────────────────────────────────────────────
+// The whole feature, end to end. What is pinned here is what a course run must
+// never do: write a file to the wrong name, disable a guard the single-download
+// path relies on, or finish without leaving a report anyone can read.
+console.log('\norchestrator:');
+{
+  const { createRequire } = await import('node:module');
+  const bulk = createRequire(import.meta.url)(path.join(ROOT, 'bulk.js'));
+
+  const build = (deps = {}) => {
+    const code = extract('background.js',
+      ['BULK_STATE_KEY', 'bulkAbort', 'getBulkState', 'setBulkState', 'bulkBroadcast',
+       'runBulkCourse', 'runBulkCourseInner', 'runBulkLesson', 'pickBestQuality']);
+    const calls = { enqueued: [], recorded: [], text: [], stubs: [], state: [] };
+    const logged = [];
+    const session = {};
+    const env = {
+      chrome: { storage: { session: {
+        get: async k => (k in session ? { [k]: structuredClone(session[k]) } : {}),
+        set: async o => { for (const [k, v] of Object.entries(o)) session[k] = structuredClone(v); },
+      } }, runtime: { sendMessage: async () => {} } },
+      BulkError: class extends Error { constructor(c, m) { super(m); this.code = c; } },
+      bulkLog: m => logged.push(m),
+      scanCourse: deps.scanCourse || (async () => ({
+        courseTitle: 'C', shape: 'flat', moduleCount: 0, group: 'g1', courseSlug: 's1',
+        lessons: [{ lessonId: 'l1', title: 'A', moduleIdx: null, moduleTitle: null, lessonIdx: 1,
+          sourceKind: 'skool-native', sourceRef: 'v', lessonUrl: 'https://u', descRaw: null, resourcesRaw: null }],
+      })),
+      pruneDeletedAssets: deps.pruneDeletedAssets || (async () => ({ lessons: {} })),
+      resolveBulkLesson: deps.resolveBulkLesson || (async () => ({ kind: 'qualities', qualities: [{ height: 720 }], platform: 'skool' })),
+      enqueueDownloadAwaited: deps.enqueueDownloadAwaited || (async o => { calls.enqueued.push(o); return { ok: true, downloadId: 5 }; }),
+      recordAsset: async (g, c, id, patch) => { calls.recorded.push({ id, patch }); },
+      saveTextFile: deps.saveTextFile || (async (p, t) => { calls.text.push({ path: p, text: t }); return 9; }),
+      saveYoutubeStub: async (b, u) => { calls.stubs.push({ base: b, url: u }); return 9; },
+      saveAttachment: deps.saveAttachment || (async () => 9),
+      // Real pure helpers — the orchestrator's job is to wire them correctly.
+      mergeManifest: bulk.mergeManifest, lessonNeedsWork: bulk.lessonNeedsWork,
+      isSettled: bulk.isSettled, SETTLED_SKIP_KINDS: bulk.SETTLED_SKIP_KINDS,
+      bulkLessonBase: bulk.bulkLessonBase, capSegment: bulk.capSegment,
+      parseResources: bulk.parseResources, descToMarkdown: bulk.descToMarkdown,
+      notesDocument: bulk.notesDocument, attachmentFilename: bulk.attachmentFilename,
+      reasonTally: bulk.reasonTally, tallyReason: bulk.tallyReason,
+      describeTally: bulk.describeTally, tallyExamples: bulk.tallyExamples,
+      bulkRunStartLine: bulk.bulkRunStartLine, bulkRunEndLine: bulk.bulkRunEndLine,
+      runSummary: bulk.runSummary,
+      flags: { bulkRunActive: false },
+      ...deps.env,
+    };
+    const api = new Function('d', `
+      const { chrome, BulkError, bulkLog, scanCourse, pruneDeletedAssets, resolveBulkLesson,
+              enqueueDownloadAwaited, recordAsset, saveTextFile, saveYoutubeStub, saveAttachment,
+              mergeManifest, lessonNeedsWork, isSettled, SETTLED_SKIP_KINDS, bulkLessonBase, capSegment,
+              parseResources, descToMarkdown, notesDocument, attachmentFilename, reasonTally, tallyReason,
+              describeTally, tallyExamples, bulkRunStartLine, bulkRunEndLine, runSummary, flags } = d;
+      ${code.replace(/\bbulkRunActive\b/g, 'flags.bulkRunActive')}
+      return { runBulkCourse, pickBestQuality, getBulkState, abort: () => bulkAbort };
+    `)(env);
+    return { ...api, calls, logged, env, session };
+  };
+
+  // The filename bug. runJob appends ".mp4" itself, so passing "<base>.mp4"
+  // writes "<base>.mp4.mp4" — every video in every course, silently.
+  {
+    const o = build();
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    check('the queue is handed a stem, not a filename with an extension',
+      o.calls.enqueued[0].filename, 'C/01 A');
+    ok('and the recorded path is the file that is actually written',
+      o.calls.recorded.some(r => r.patch.video?.path === 'C/01 A.mp4'));
+  }
+
+  // mode must be absent. A truthy unknown value reads as "single-rendition,
+  // free" and skips the pre-merge SIMD guard.
+  {
+    const o = build();
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    check('no mode is set, so the SIMD guard still applies', o.calls.enqueued[0].mode, undefined);
+    check('and no tab can cancel the run', o.calls.enqueued[0].tabId, null);
+  }
+
+  // Every run leaves a readable trace, whatever happened.
+  {
+    const o = build();
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    ok('a run opens with its fingerprint', /^start "C" flat 0mod\/1les want=video/.test(o.logged[0]));
+    ok('and closes with counts that add up', /^done 1les: 1 saved/.test(o.logged[1]));
+    check('a clean run is exactly two lines', o.logged.length, 2);
+  }
+  {
+    const o = build({ scanCourse: async () => { const e = new Error('Sign in to Skool'); e.code = 'not-signed-in'; throw e; } });
+    let threw = false;
+    try { await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } }); } catch { threw = true; }
+    ok('a failed scan still rejects', threw);
+    ok('and says the run aborted rather than leaving only a scan line', /run aborted/.test(o.logged.join(' ')));
+    check('and the state says error, not running', (await o.getBulkState()).phase, 'error');
+    check('and the per-download log suppression is lifted', o.env.flags.bulkRunActive, false);
+  }
+  {
+    const o = build();
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    check('the suppression flag is cleared on the happy path too', o.env.flags.bulkRunActive, false);
+  }
+
+  // Skips carry the resolver's worked example into the report.
+  {
+    const o = build({ resolveBulkLesson: async () => ({ kind: 'skip', reason: 'no-qualities', detail: 'both playback hosts failed: HTTP 403' }) });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    const all = o.logged.join(' | ');
+    ok('the tally names the reason', /no-qualities×1/.test(all));
+    ok('and carries the resolver detail, not just the word', /HTTP 403/.test(all));
+  }
+  {
+    const o = build({ resolveBulkLesson: async () => ({ kind: 'skip', reason: 'locked' }) });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    const rec = o.calls.recorded.find(r => r.patch.reason === 'locked');
+    check('a locked lesson records no settling slot, so a later run retries it', rec.patch.video, undefined);
+  }
+  {
+    const o = build({ resolveBulkLesson: async () => ({ kind: 'skip', reason: 'unknown', detail: 'x' }) });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    const rec = o.calls.recorded.find(r => r.patch.reason === 'unknown');
+    check('an unknown source settles for good', rec.patch.video, { skipped: 'unknown' });
+  }
+
+  // YouTube: a stub per lesson plus one course index, and the index failing must
+  // not vanish — it is the only list of every hosted lesson.
+  {
+    const o = build({ resolveBulkLesson: async () => ({ kind: 'link', url: 'https://youtu.be/x' }) });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    check('a stub is written beside the lesson', o.calls.stubs[0], { base: 'C/01 A', url: 'https://youtu.be/x' });
+    ok('and a course-level index is written', o.calls.text.some(t => t.path === 'C/_youtube-lessons.txt'));
+  }
+  {
+    const o = build({
+      resolveBulkLesson: async () => ({ kind: 'link', url: 'https://youtu.be/x' }),
+      saveTextFile: async p => { if (p.includes('_youtube')) throw new Error('disk full'); return 9; },
+    });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    ok('a failed index is reported, not swallowed', /youtube-index/.test(o.logged.join(' ')));
+    ok('and the run still completes', /^done 1les/.test(o.logged.find(l => l.startsWith('done')) || ''));
+  }
+
+  // A download that fails is a named failure on that lesson, and the run goes on.
+  {
+    const o = build({ enqueueDownloadAwaited: async () => ({ ok: false, error: 'Network connection lost' }) });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true } });
+    ok('the end line counts it as failed', /1 failed \(download×1\)/.test(o.logged.find(l => l.startsWith('done'))));
+    ok('and the example carries the real error', /Network connection lost/.test(o.logged.join(' ')));
+  }
+
+  // An unreadable resource list leaves no failure anywhere unless it is tallied:
+  // the lesson simply looks like it had no attachments.
+  {
+    const o = build({
+      scanCourse: async () => ({ courseTitle: 'C', shape: 'flat', moduleCount: 0,
+        lessons: [{ lessonId: 'l1', title: 'A', moduleIdx: null, moduleTitle: null, lessonIdx: 1,
+          sourceKind: 'text', sourceRef: null, lessonUrl: 'https://u', descRaw: null,
+          resourcesRaw: JSON.stringify([{ nothing: 1 }, { also: 2 }]) }] }),
+    });
+    await o.runBulkCourse({ group: 'g1', courseSlug: 's1', want: { video: true, files: true } });
+    ok('dropped resource entries are reported', /resources-unreadable/.test(o.logged.join(' ')));
+    ok('with the count', /2 entr/.test(o.logged.join(' ')));
+  }
+
+  check('the best quality wins', build().pickBestQuality([{ height: 480 }, { height: 1080 }, { height: 720 }]).height, 1080);
+  check('an unlabelled height does not beat a real one', build().pickBestQuality([{ height: 720 }, {}]).height, 720);
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);
