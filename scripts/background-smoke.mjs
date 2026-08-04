@@ -257,5 +257,86 @@ console.log('\nreport log budget:');
   check('non-array input never throws', compose(null, undefined), []);
 }
 
+// ── 6. What a failed course scan tells support ───────────────────────────────
+// Every failure branch in scanCourse ends with "send a problem report", so the
+// line it logs IS the diagnosis. Signed-out, rate-limited, an error page and a
+// real schema change all present to the user as "it didn't work"; only these
+// lines tell them apart, and nothing else in the codebase would notice if one
+// started reporting the wrong thing.
+console.log('\ncourse scan diagnostics:');
+{
+  const { createRequire } = await import('node:module');
+  const bulk = createRequire(import.meta.url)(path.join(ROOT, 'bulk.js'));
+
+  // Builds scanCourse against a scripted response, capturing what it logs.
+  const runScan = async ({ finalUrl, status = 200, body = '' }) => {
+    const code = extract('background.js',
+      ['BULK_FETCH_TIMEOUT_MS', 'bulkFetch', 'fetchPageProps', 'bulkPathOf', 'scanCourse']);
+    const logged = [];
+    const scan = new Function('deps', `
+      const { fetch, bulkLog, BulkError, extractPageProps, courseUrlFor, courseTreeFromPageProps } = deps;
+      ${code}
+      return scanCourse;
+    `)({
+      fetch: async () => ({
+        url: finalUrl, status,
+        text: async () => { if (body instanceof Error) throw body; return body; },
+      }),
+      bulkLog: m => logged.push(m),
+      BulkError: class extends Error { constructor(c, m) { super(m); this.code = c; } },
+      extractPageProps: bulk.extractPageProps,
+      courseUrlFor: bulk.courseUrlFor,
+      courseTreeFromPageProps: bulk.courseTreeFromPageProps,
+    });
+    let code_ = null;
+    try { await scan('g1', 'slug1'); } catch (e) { code_ = e.code; }
+    return { code: code_, logged };
+  };
+
+  const nextData = props => `<script id="__NEXT_DATA__">${JSON.stringify({ props: { pageProps: props } })}</script>`;
+  const course = kids => ({ self: { id: 'u' }, renderData: { course: { course: { id: 'c0', metadata: { title: 'T' } }, children: kids } } });
+
+  const signedOut = await runScan({ finalUrl: 'https://www.skool.com/g1/about', body: '<html></html>' });
+  check('a redirect off /classroom/ is signed-out, not drift', signedOut.code, 'not-signed-in');
+  ok('and the line says where it landed', /\/g1\/about/.test(signedOut.logged[0]));
+
+  const limited = await runScan({ finalUrl: 'https://www.skool.com/g1/classroom/slug1', status: 429, body: '' });
+  check('429 is its own code, not drift', limited.code, 'rate-limited');
+  ok('and the line says so', /rate-limited/.test(limited.logged[0]));
+
+  const noProps = await runScan({ finalUrl: 'https://www.skool.com/g1/classroom/slug1', body: '<html>error page</html>' });
+  check('no page data is drift', noProps.code, 'schema-drift');
+  ok('and the line carries the status, path and size',
+    /HTTP 200/.test(noProps.logged[0]) && /\/g1\/classroom\/slug1/.test(noProps.logged[0]) && /\d+b/.test(noProps.logged[0]));
+  ok('and says the payload was absent', /props=no/.test(noProps.logged[0]));
+
+  const noUser = await runScan({ finalUrl: 'https://www.skool.com/g1/classroom/slug1', body: nextData({ self: null }) });
+  check('page data but no user is signed-out', noUser.code, 'not-signed-in');
+  ok('and is distinguishable from the redirect case', /no signed-in user/.test(noUser.logged[0]));
+
+  const empty = await runScan({ finalUrl: 'https://www.skool.com/g1/classroom/slug1', body: nextData(course([])) });
+  check('an empty course is not drift', empty.code, 'empty-course');
+  ok('and the line names it', /empty-course/.test(empty.logged[0]));
+
+  const drift = await runScan({
+    finalUrl: 'https://www.skool.com/g1/classroom/slug1',
+    body: nextData(course([{ lessonNode: { identifier: 'l1' } }, { lessonNode: { identifier: 'l2' } }])),
+  });
+  check('reshaped children are drift', drift.code, 'schema-drift');
+  ok('and the line carries what the walk actually saw',
+    /2 top-level nodes but no lesson node matched/.test(drift.logged[0]));
+
+  const broken = await runScan({ finalUrl: 'https://x', body: new Error('boom') });
+  check('a fetch failure is network, not drift', broken.code, 'network');
+  ok('and names the error', /boom/.test(broken.logged[0]));
+
+  const good = await runScan({
+    finalUrl: 'https://www.skool.com/g1/classroom/slug1',
+    body: nextData(course([{ course: { id: 'l1', metadata: { title: 'A', videoId: 'v' } }, children: [] }])),
+  });
+  check('a healthy scan throws nothing', good.code, null);
+  check('and logs nothing — the run start line covers it', good.logged.length, 0);
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);

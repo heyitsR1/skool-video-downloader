@@ -639,5 +639,35 @@ console.log('\nrun diagnostics');
     bulk.tallyExamples(bulk.tallyReason(bulk.reasonTally(), 'x', 'a\nb')), 'x: a b');
 }
 
+console.log('\nextractPageProps');
+{
+  const html = `<html><head><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { hello: 'world' } } })}</script></head><body></body></html>`;
+  check('reads the embedded payload', bulk.extractPageProps(html), { hello: 'world' });
+  check('single-quoted id attribute', bulk.extractPageProps(`<script id='__NEXT_DATA__'>{"props":{"pageProps":{"a":1}}}</script>`), { a: 1 });
+  check('missing script', bulk.extractPageProps('<html></html>'), null);
+  check('malformed JSON', bulk.extractPageProps('<script id="__NEXT_DATA__">{oops</script>'), null);
+  check('no pageProps inside', bulk.extractPageProps('<script id="__NEXT_DATA__">{"props":{}}</script>'), null);
+  check('empty input', bulk.extractPageProps(''), null);
+  check('non-string input', bulk.extractPageProps(null), null);
+
+  // The id attribute is what scopes this. Another inline script must not match,
+  // in either direction — picking up the wrong one yields a confident wrong
+  // answer rather than a failure anyone would notice.
+  check('a decoy script before it is not matched', bulk.extractPageProps(
+    `<script>window.x={"props":{"pageProps":{"wrong":1}}}</script>` +
+    `<script id="__NEXT_DATA__">{"props":{"pageProps":{"right":1}}}</script>`), { right: 1 });
+  check('a similarly named id does not match',
+    bulk.extractPageProps('<script id="__NEXT_DATA__EXTRA">{"props":{"pageProps":{"a":1}}}</script>'), null);
+  check('attributes before the id are fine', bulk.extractPageProps(
+    '<script type="application/json" nonce="abc" id="__NEXT_DATA__">{"props":{"pageProps":{"a":1}}}</script>'), { a: 1 });
+  check('a closing tag with trailing space', bulk.extractPageProps(
+    '<script id="__NEXT_DATA__">{"props":{"pageProps":{"a":1}}}</script >'), { a: 1 });
+  check('pageProps that is not an object', bulk.extractPageProps(
+    '<script id="__NEXT_DATA__">{"props":{"pageProps":"nope"}}</script>'), null);
+  check('a course payload survives the round trip',
+    bulk.extractPageProps(`<script id="__NEXT_DATA__">${JSON.stringify({ props: { pageProps: fixture('course-flat') } })}</script>`)
+      .renderData.course.course.metadata.title, 'Flat Course');
+}
+
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : '✓ all assertions hold'}`);
 process.exit(failures ? 1 : 0);

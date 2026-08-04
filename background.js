@@ -1881,3 +1881,100 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
   return true;
 });
+
+// ── Bulk course backup ────────────────────────────────────────────────────────
+// One authenticated fetch of a classroom course page enumerates every lesson, so
+// this runs entirely here — no tab to drive, no page to keep focused. Each
+// lesson's media is resolved immediately before it downloads, never in a
+// preflight sweep: a lesson page is around half a megabyte, and playback tokens
+// expire in about a day.
+
+const BULK_FETCH_TIMEOUT_MS = 30000;
+
+// Every network call carries a timeout. A probe with no deadline is worse than
+// the guess it replaced, because it can hang a run with no way out.
+async function bulkFetch(url, init = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), init.timeoutMs || BULK_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { credentials: 'include', ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+class BulkError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+// Fetches a Skool page and returns its server props, plus the URL we ended up on.
+// The final URL matters: a signed-out request for a classroom page is answered
+// with a redirect to the community's about page rather than an error.
+async function fetchPageProps(url) {
+  const res = await bulkFetch(url);
+  const html = await res.text();
+  return {
+    finalUrl: res.url, status: res.status, pageProps: extractPageProps(html),
+    // Kept for diagnostics only. Every scan failure below tells the user to send
+    // a problem report, and "the page format changed" is unactionable without
+    // some evidence of what actually arrived — an error page, a login wall and a
+    // genuine schema change are three different fixes and look identical here.
+    bytes: html.length,
+  };
+}
+
+// Where a redirect landed, minus the query string. A scan failure is almost
+// always a redirect somewhere unexpected, and the path is what identifies it.
+function bulkPathOf(url) {
+  try { return new URL(url).pathname.slice(0, 80); } catch { return String(url).slice(0, 80); }
+}
+
+// Enumerate a course. Distinguishes four outcomes that all look like "no
+// lessons" if you only count them.
+async function scanCourse(group, courseSlug) {
+  let probe;
+  try {
+    probe = await fetchPageProps(courseUrlFor(group, courseSlug));
+  } catch (e) {
+    // A timeout and a dropped connection are both AbortError-ish here; the
+    // message is the only thing that tells them apart in a report.
+    bulkLog(`scan fetch failed: ${e.name}: ${String(e.message).slice(0, 120)}`);
+    throw new BulkError('network', 'Could not reach Skool. Check your connection and try again.');
+  }
+
+  const { finalUrl, status, pageProps, bytes } = probe;
+  // One line describing what came back, logged only when the scan fails. On a
+  // healthy run the start line in runBulkCourse says everything this would.
+  const shape = () => `HTTP ${status} ${bulkPathOf(finalUrl)} ${bytes}b props=${pageProps ? 'yes' : 'no'}`;
+
+  if (!finalUrl.includes('/classroom/')) {
+    // Signed out: Skool answers a classroom URL with the community about page.
+    bulkLog(`scan redirected off /classroom/ — ${shape()}`);
+    throw new BulkError('not-signed-in', 'Sign in to Skool in this browser, then try again.');
+  }
+  if (status === 429) {
+    bulkLog(`scan rate-limited — ${shape()}`);
+    throw new BulkError('rate-limited', 'Skool is rate-limiting this browser. Wait a few minutes and try again.');
+  }
+  if (!pageProps) {
+    // No __NEXT_DATA__ at all: an error page, an interstitial, or a real change.
+    bulkLog(`scan found no page data — ${shape()}`);
+    throw new BulkError('schema-drift', 'Skool\'s page format changed. Please send a problem report.');
+  }
+  if (pageProps.self == null) {
+    bulkLog(`scan has page data but no signed-in user — ${shape()}`);
+    throw new BulkError('not-signed-in', 'Sign in to Skool in this browser, then try again.');
+  }
+
+  const tree = courseTreeFromPageProps(pageProps, group, courseSlug);
+  if (!tree.ok) {
+    // tree.detail is the whole reason the walk reports a code rather than
+    // throwing: it names which of the two indistinguishable cases this is, and
+    // for drift, what the walk actually saw.
+    bulkLog(`scan ${tree.code}: ${tree.detail || 'no detail'} — ${shape()}`);
+    if (tree.code === 'empty-course') throw new BulkError('empty-course', 'This course has no lessons yet.');
+    throw new BulkError('schema-drift', 'Skool\'s page format changed. Please send a problem report.');
+  }
+
+  return { ...tree, group, courseSlug };
+}

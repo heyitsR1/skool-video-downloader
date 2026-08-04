@@ -66,6 +66,23 @@ function courseUrlFor(group, courseSlug) {
 }
 
 // ── Page payload ──────────────────────────────────────────────────────────────
+// Skool is a Next.js app, so each page embeds its server props in a single
+// script tag. The service worker has no DOM parser, so this is a regex — scoped
+// by the id attribute so it cannot match any other inline script. Matching the
+// wrong script would produce a confident wrong answer rather than a failure
+// anyone would notice.
+
+const NEXT_DATA_RE = /<script\b(?=[^>]*\bid\s*=\s*(["'])__NEXT_DATA__\1)[^>]*>([\s\S]*?)<\/script\s*>/i;
+
+function extractPageProps(html) {
+  if (typeof html !== 'string' || !html) return null;
+  const m = html.match(NEXT_DATA_RE);
+  if (!m || !m[2]) return null;
+  try {
+    const props = JSON.parse(m[2])?.props?.pageProps;
+    return props && typeof props === 'object' ? props : null;
+  } catch { return null; }
+}
 
 // ── Course tree ───────────────────────────────────────────────────────────────
 
@@ -664,6 +681,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     KIND, SOURCE,
     parseClassroomUrl, lessonUrlFor, courseUrlFor,
+    NEXT_DATA_RE, extractPageProps,
     courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps,
     sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument,
