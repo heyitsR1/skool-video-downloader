@@ -2444,12 +2444,20 @@ async function pruneDeletedAssets(group, courseSlug) {
     if (items[0].exists === false) missing.add(id);
   }
 
-  // Logged whenever anything was inconclusive, even with nothing to re-queue:
-  // "it re-downloaded everything" and "it skipped everything" are both explained
-  // by these counts, and neither is answerable without them.
-  if (missing.size || unknown || failed) {
-    bulkLog(`disk check: ${ids.length} recorded, ${missing.size} deleted, ${unknown} not in history, ${failed} unreadable`);
-  }
+  // Always logged, never conditionally: "it re-downloaded everything" and "it
+  // skipped everything" are both explained by these counts, and a silent check
+  // is indistinguishable from one that never ran.
+  //
+  // Measured 2026-08-04: Chrome does not revalidate DownloadItem.exists for
+  // files removed outside the browser. Deleting three saved files and re-running
+  // reported 0 deleted, and calling search() — which the API docs say triggers
+  // an existence check — produced no onChanged and no change after 12 seconds,
+  // in a freshly started browser. So this check finds a deleted file only when
+  // Chrome has already noticed one, which in practice is rarely. It is kept
+  // because a true `exists: false` is still worth acting on, but nothing may
+  // promise the user that deleting a file gets it back: "Re-download everything"
+  // is the path that actually works.
+  bulkLog(`disk check: ${ids.length} recorded, ${missing.size} deleted, ${unknown} not in history, ${failed} unreadable`);
   if (!missing.size) return manifest;
 
   const drop = slot => (slot && missing.has(slot.downloadId)) ? null : slot;
@@ -2533,6 +2541,9 @@ async function runBulkCourse({ group, courseSlug, want }) {
 }
 
 async function runBulkCourseInner({ group, courseSlug, want }) {
+  // Before the scan, not after: the scan is part of the run, and a log claiming
+  // a 9-lesson backup took five milliseconds is not a log anyone can trust.
+  const runStartedAt = Date.now();
   const scan = await scanCourse(group, courseSlug);
   // Prune before every run, not only on resume: a plain second run over the same
   // course is exactly when a user who deleted files expects them back.
@@ -2556,7 +2567,6 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
     resumed: merged.filter(l => !lessonNeedsWork(l.priorAssets, want, [])).length,
   }));
 
-  const runStartedAt = Date.now();
   await setBulkState({
     phase: 'running', group, courseSlug, courseTitle: scan.courseTitle,
     total, done: 0, currentTitle: null, want, startedAt: runStartedAt,

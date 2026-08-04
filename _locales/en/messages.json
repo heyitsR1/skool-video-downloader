@@ -1,184 +1,583 @@
 {
-  "videoOnThisPage": { "message": "on this page" },
-  "extName": { "message": "Skool Video Downloader" },
-  "extDescription": { "message": "Free Skool video downloader. Save Skool, Loom, Vimeo, YouTube & Wistia lessons as MP4. 5 free downloads every week — no signup, no card." },
-
-  "badgeFree": { "message": "Free" },
-  "badgePro": { "message": "Pro" },
-  "updateBannerDefault": { "message": "A new version is available" },
-  "updateFallback": { "message": "v$1 is out — you're on v$2" },
-  "updateGo": { "message": "Update →" },
-  "updateDismissAria": { "message": "Dismiss" },
-
-  "creditsLoading": { "message": "Loading…" },
-  "lifetimeLink": { "message": "Get lifetime" },
-  "upgradeBtn": { "message": "Unlimited downloads & full quality" },
-  "lifetimeCredits": { "message": "Unlimited downloads — forever" },
-  "proCredits": { "message": "Unlimited downloads" },
-  "creditsRemaining": { "message": "$1 of $2 free downloads left this week" },
-  "creditsExhausted": { "message": "Weekly free downloads used up — resets in a few days" },
-
-  "statusChecking": { "message": "Checking this page…" },
-  "statusOpenLesson": { "message": "Open a Skool lesson to start" },
-  "hintOpenLesson": { "message": "Go to your Skool classroom or community, then open a video." },
-  "statusNoVideo": { "message": "No video detected yet" },
-  "hintNoVideo": { "message": "Press play on the lesson video, then reopen this popup." },
-  "statusFoundSingular": { "message": "$1 video found" },
-  "statusFoundPlural": { "message": "$1 videos found" },
-  "hintPickVideo": { "message": "Pick a video to choose quality and download." },
-  "videoDefaultTitle": { "message": "Video $1" },
-
-  "qualityBack": { "message": "← Back to videos" },
-  "qualityTitleDefault": { "message": "Choose quality" },
-  "qualityResolving": { "message": "Resolving available resolutions…" },
-  "qualityErrorGeneric": { "message": "Could not resolve this video." },
-  "qualityKindMerged": { "message": "video + audio · merged in browser" },
-  "qualityKindHls": { "message": "HLS → MP4" },
-  "qualityKindMp4": { "message": "MP4" },
-  "qualityDownloadBtn": { "message": "Download" },
-  "planFeatureSupport": { "message": "Priority email support" },
-  "planBestValue": { "message": "★ BEST VALUE" },
-  "planLifetimeSub": { "message": "Pay once, own it forever" },
-  "planLifetimeFeatureEverything": { "message": "Everything in Monthly, permanently" },
-  "planLifetimeFeatureNoRenewal": { "message": "No renewals, no expiry, no card on file" },
-  "planLifetimeFeatureUpdates": { "message": "All future updates included" },
-  "planCtaBuyOnce": { "message": "Buy once, own forever" },
-  "planLifetimeReassure": { "message": "Costs less than 11 months of Monthly" },
-  "combinedBtn": { "message": "Download video + audio" },
-  "combinedBtnSub": { "message": "One file, with sound" },
-  "qualityStepBack": { "message": "← Back to options" },
-  "chooseQualityLabel": { "message": "Choose quality" },
-  "freeForeverLabel": { "message": "Free forever · no limit" },
-  "videoOnlyBtn": { "message": "Video only" },
-  "audioOnlyBtn": { "message": "Audio only" },
-  "freeBlockNote": { "message": "Separate files — no merge, no credit used." },
-  "noSimdNote": { "message": "This computer can't combine video and audio into one file — its processor is missing an instruction set Chrome needs (common on older CPUs and virtual machines). The two buttons below work every time." },
-  "saveAsLabel": { "message": "Save as" },
-  "filenamePlaceholder": { "message": "filename" },
-  "weeklyLimitMsg": { "message": "You've used your 5 free downloads this week — go unlimited to keep saving." },
-  "downloadStartError": { "message": "Could not start the download. Try again." },
-
-  "ytHeadsUp": { "message": "Heads up" },
-  "ytPolicyBody": { "message": "YouTube blocks downloads from browser extensions — all of them, not just ours. Our short guide has a copy-paste command that saves this exact video (link pre-filled). First time takes ~2 minutes, seconds after that." },
-  "ytGuideBtn": { "message": "Get this video →" },
-
-  "downloadsTitle": { "message": "Downloads" },
-  "managerActive": { "message": "$1 active" },
-  "managerActiveQueued": { "message": "$1 active · $2 queued" },
-  "defaultDownloadName": { "message": "download" },
-  "dlSaved": { "message": "✓ Saved" },
-  "dlFailed": { "message": "Failed" },
-  "dlReportBtn": { "message": "🚩 Report" },
-  "reportThisError": { "message": "🚩 Report this error" },
-  "dlCancelled": { "message": "Cancelled" },
-  "dlCancelBtn": { "message": "Cancel" },
-  "downloadFailedLabel": { "message": "Download failed: $1" },
-  "phaseQueued": { "message": "Queued" },
-  "phaseCancelled": { "message": "Cancelled" },
-  "phaseMerging": { "message": "Merging…" },
-  "phaseWaiting": { "message": "Rate-limited — retrying in $TIME$ ($PCT$% kept)", "placeholders": { "time": { "content": "$1" }, "pct": { "content": "$2" } } },
-  "phaseSaving": { "message": "Saving…" },
-  "phaseDone": { "message": "Done" },
-  "phaseError": { "message": "Error" },
-  "phaseStarting": { "message": "Starting…" },
-
-  "licenseLabel": { "message": "Have a license key?" },
-  "licenseLabelUpgrade": { "message": "Bought lifetime? Activate your new key" },
-  "licensePlaceholder": { "message": "sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx" },
-  "activateBtn": { "message": "Activate license" },
-  "verifyingBtn": { "message": "Verifying…" },
-  "licenseActivated": { "message": "License activated!" },
-  "licenseInvalid": { "message": "Invalid or expired license key." },
-  "licenseInactive": { "message": "That license is inactive — the subscription may have been cancelled or expired." },
-  "licenseLimit": { "message": "That license has reached its activation limit. Contact support and we'll free up a slot." },
-  "licenseUtilized": { "message": "This license is already active on all of its allowed installs. Reinstalling the extension uses up a slot — email support@skoolvideodownload.com and we'll free one for you right away." },
-  "licenseExpired": { "message": "That license has expired. If you believe it should still be active, email support@skoolvideodownload.com." },
-  "licenseWrongProduct": { "message": "That key belongs to a different one of our extensions, not this one." },
-  "licenseNetwork": { "message": "Couldn't reach the license server. Check your connection and try again." },
-  "upgradeCancelled": { "message": "Lifetime activated — your monthly subscription has been cancelled." },
-  "upgradeCancelFailed": { "message": "Lifetime activated. We couldn't cancel your monthly automatically — please cancel it so you're not billed again: " },
-  "upgradeCancelLink": { "message": "Cancel monthly →" },
-
-  "footerHelp": { "message": "Help" },
-  "footerReport": { "message": "🚩 Report a problem" },
-
-  "closeAria": { "message": "Close" },
-  "reportTitle": { "message": "Report a problem" },
-  "reportSub": { "message": "Sends a small diagnostic snapshot (extension version, plan, what was detected on this page, recent errors) straight to the developer. No page content or personal data." },
-  "reportErrorPrefix": { "message": "Error being reported: $1" },
-  "reportNoteLabel": { "message": "What went wrong?" },
-  "reportOptional": { "message": "(optional)" },
-  "reportNotePlaceholder": { "message": "e.g. The Loom video on this lesson never finishes downloading" },
-  "reportEmailLabel": { "message": "Email for a follow-up" },
-  "reportEmailPlaceholder": { "message": "you@example.com" },
-  "reportSendBtn": { "message": "Send report" },
-  "reportSending": { "message": "Sending…" },
-  "reportSentBtn": { "message": "✓ Sent — thank you!" },
-  "reportSentEmailNote": { "message": "We'll email you when it's fixed." },
-  "reportClipboardFallback": { "message": "Couldn't reach our server — report copied to your clipboard. Please paste it into an email to support@skoolvideodownload.com." },
-  "reportServerError": { "message": "Couldn't reach our server — please email support@skoolvideodownload.com." },
-
-  "pricingTitle": { "message": "Go Unlimited" },
-  "pricingSub": { "message": "Your free plan covers 5 downloads a week. Unlock unlimited saves at every quality." },
-  "planMostPopular": { "message": "🔥 MOST POPULAR" },
-  "planMonthlyName": { "message": "Monthly" },
-  "planMonthlyTagline": { "message": "Cancel anytime · no commitment" },
-  "planFeatureUnlimited": { "message": "Unlimited downloads — no weekly cap" },
-  "planFeatureResolution": { "message": "Every resolution the source offers" },
-  "planFeaturePlatforms": { "message": "Skool, Loom, Vimeo, YouTube & Wistia" },
-  "planFeaturePrivate": { "message": "100% private — processed on your device" },
-  "planCtaGoUnlimited": { "message": "Go unlimited" },
-  "planReassure": { "message": "Secure checkout · Instant access" },
-  "planLifetimeName": { "message": "Lifetime" },
-  "modalLater": { "message": "Maybe later" },
-
-  "welcomeTitle": { "message": "Welcome — Skool Video Downloader" },
-  "welcomeBadge": { "message": "🎓 Skool Video Downloader" },
-  "welcomeH1": { "message": "You're all set" },
-  "welcomeSub": { "message": "Save Skool lessons — and any Loom, Vimeo, YouTube or Wistia video embedded inside them — as clean MP4 files, right from your browser." },
-  "howToTitle": { "message": "How to download a video" },
-  "step1": { "message": "Open any lesson in your Skool classroom or community." },
-  "step2": { "message": "<strong>Press play</strong> on the video so the extension can detect the stream." },
-  "step3": { "message": "Click the <strong>Skool Video Downloader</strong> icon in your toolbar." },
-  "step4": { "message": "Pick the video, choose a quality, and hit <strong>Download</strong> — it saves straight to your Downloads folder as MP4." },
-  "multiDownloadNote": { "message": "Queue as many downloads as you like — they run one after another, with live progress and speed in the popup." },
-  "worksAcrossTitle": { "message": "Works across every player Skool uses" },
-  "chipSkool": { "message": "🎓 Skool native" },
-  "chipLoom": { "message": "🔴 Loom" },
-  "chipVimeo": { "message": "🎬 Vimeo" },
-  "chipYoutube": { "message": "▶️ YouTube" },
-  "chipWistia": { "message": "🟢 Wistia" },
-  "platformNote": { "message": "The extension auto-detects which platform each lesson uses and pulls the highest quality the source offers. Everything is processed locally on your device — no uploads, no tracking." },
-  "openSkoolCta": { "message": "Open Skool →" },
-  "freeNote": { "message": "5 downloads every week are free — no credit card required." },
-
-  "bulkDownloadCourse":   { "message": "Download entire course" },
-  "bulkWantVideo":        { "message": "Videos" },
-  "bulkWantNotes":        { "message": "Lesson notes" },
-  "bulkWantFiles":        { "message": "Attachments" },
-  "bulkLessonCount":      { "message": "$COUNT$ lessons", "placeholders": { "count": { "content": "$1" } } },
-  "bulkModuleCount":      { "message": "$COUNT$ modules", "placeholders": { "count": { "content": "$1" } } },
-  "bulkLockedNote":       { "message": "Lessons your account cannot open yet are skipped, and listed when the run finishes." },
-  "bulkProNote":          { "message": "Full-course backup is a Pro feature." },
-  "bulkPause":            { "message": "Pause" },
-  "bulkResumeRun":        { "message": "Resume" },
-  "bulkCancel":           { "message": "Cancel" },
-  "bulkPausedNote":       { "message": "Your progress is saved. You can close this popup or restart your browser." },
-  "bulkPausedMeta":       { "message": "Paused at $DONE$ of $TOTAL$", "placeholders": { "done": { "content": "$1" }, "total": { "content": "$2" } } },
-  "bulkResumeTitle":      { "message": "Unfinished backup" },
-  "bulkResumeMeta":       { "message": "$SAVED$ of $TOTAL$ lessons already saved", "placeholders": { "saved": { "content": "$1" }, "total": { "content": "$2" } } },
-  "bulkResumeGo":         { "message": "Resume course download" },
-  "bulkRestart":          { "message": "Re-download everything" },
-  "bulkRestartConfirm":   { "message": "Re-download everything?" },
-  "bulkProgress":         { "message": "$DONE$ of $TOTAL$", "placeholders": { "done": { "content": "$1" }, "total": { "content": "$2" } } },
-  "bulkSummary":          { "message": "Saved $SAVED$ \u00b7 skipped $SKIPPED$ \u00b7 failed $FAILED$", "placeholders": { "saved": { "content": "$1" }, "skipped": { "content": "$2" }, "failed": { "content": "$3" } } },
-  "bulkAgain":            { "message": "Back" },
-  "bulkCancelled":        { "message": "Cancelled" },
-  "bulkErrNotSignedIn":   { "message": "Sign in to Skool in this browser, then try again." },
-  "bulkErrSchemaDrift":   { "message": "Skool's page layout changed, so the lesson list could not be read. Please send a problem report." },
-  "bulkErrEmptyCourse":   { "message": "This course has no lessons yet." },
-  "bulkErrNoAccess":      { "message": "This course is not available to your account." },
-  "bulkErrRateLimited":   { "message": "Skool is rate-limiting this browser. Wait a few minutes and try again." },
-  "bulkSkipLocked":       { "message": "$COUNT$ not available to your account", "placeholders": { "count": { "content": "$1" } } },
-  "bulkSkipYoutube":      { "message": "$COUNT$ hosted on YouTube \u2014 see _youtube-lessons.txt", "placeholders": { "count": { "content": "$1" } } }
+  "videoOnThisPage": {
+    "message": "on this page"
+  },
+  "extName": {
+    "message": "Skool Video Downloader"
+  },
+  "extDescription": {
+    "message": "Free Skool video downloader. Save Skool, Loom, Vimeo, YouTube & Wistia lessons as MP4. 5 free downloads every week — no signup, no card."
+  },
+  "badgeFree": {
+    "message": "Free"
+  },
+  "badgePro": {
+    "message": "Pro"
+  },
+  "updateBannerDefault": {
+    "message": "A new version is available"
+  },
+  "updateFallback": {
+    "message": "v$1 is out — you're on v$2"
+  },
+  "updateGo": {
+    "message": "Update →"
+  },
+  "updateDismissAria": {
+    "message": "Dismiss"
+  },
+  "creditsLoading": {
+    "message": "Loading…"
+  },
+  "lifetimeLink": {
+    "message": "Get lifetime"
+  },
+  "upgradeBtn": {
+    "message": "Unlimited downloads & full quality"
+  },
+  "lifetimeCredits": {
+    "message": "Unlimited downloads — forever"
+  },
+  "proCredits": {
+    "message": "Unlimited downloads"
+  },
+  "creditsRemaining": {
+    "message": "$1 of $2 free downloads left this week"
+  },
+  "creditsExhausted": {
+    "message": "Weekly free downloads used up — resets in a few days"
+  },
+  "statusChecking": {
+    "message": "Checking this page…"
+  },
+  "statusOpenLesson": {
+    "message": "Open a Skool lesson to start"
+  },
+  "hintOpenLesson": {
+    "message": "Go to your Skool classroom or community, then open a video."
+  },
+  "statusNoVideo": {
+    "message": "No video detected yet"
+  },
+  "hintNoVideo": {
+    "message": "Press play on the lesson video, then reopen this popup."
+  },
+  "statusFoundSingular": {
+    "message": "$1 video found"
+  },
+  "statusFoundPlural": {
+    "message": "$1 videos found"
+  },
+  "hintPickVideo": {
+    "message": "Pick a video to choose quality and download."
+  },
+  "videoDefaultTitle": {
+    "message": "Video $1"
+  },
+  "qualityBack": {
+    "message": "← Back to videos"
+  },
+  "qualityTitleDefault": {
+    "message": "Choose quality"
+  },
+  "qualityResolving": {
+    "message": "Resolving available resolutions…"
+  },
+  "qualityErrorGeneric": {
+    "message": "Could not resolve this video."
+  },
+  "qualityKindMerged": {
+    "message": "video + audio · merged in browser"
+  },
+  "qualityKindHls": {
+    "message": "HLS → MP4"
+  },
+  "qualityKindMp4": {
+    "message": "MP4"
+  },
+  "qualityDownloadBtn": {
+    "message": "Download"
+  },
+  "planFeatureSupport": {
+    "message": "Priority email support"
+  },
+  "planBestValue": {
+    "message": "★ BEST VALUE"
+  },
+  "planLifetimeSub": {
+    "message": "Pay once, own it forever"
+  },
+  "planLifetimeFeatureEverything": {
+    "message": "Everything in Monthly, permanently"
+  },
+  "planLifetimeFeatureNoRenewal": {
+    "message": "No renewals, no expiry, no card on file"
+  },
+  "planLifetimeFeatureUpdates": {
+    "message": "All future updates included"
+  },
+  "planCtaBuyOnce": {
+    "message": "Buy once, own forever"
+  },
+  "planLifetimeReassure": {
+    "message": "Costs less than 11 months of Monthly"
+  },
+  "combinedBtn": {
+    "message": "Download video + audio"
+  },
+  "combinedBtnSub": {
+    "message": "One file, with sound"
+  },
+  "qualityStepBack": {
+    "message": "← Back to options"
+  },
+  "chooseQualityLabel": {
+    "message": "Choose quality"
+  },
+  "freeForeverLabel": {
+    "message": "Free forever · no limit"
+  },
+  "videoOnlyBtn": {
+    "message": "Video only"
+  },
+  "audioOnlyBtn": {
+    "message": "Audio only"
+  },
+  "freeBlockNote": {
+    "message": "Separate files — no merge, no credit used."
+  },
+  "noSimdNote": {
+    "message": "This computer can't combine video and audio into one file — its processor is missing an instruction set Chrome needs (common on older CPUs and virtual machines). The two buttons below work every time."
+  },
+  "saveAsLabel": {
+    "message": "Save as"
+  },
+  "filenamePlaceholder": {
+    "message": "filename"
+  },
+  "weeklyLimitMsg": {
+    "message": "You've used your 5 free downloads this week — go unlimited to keep saving."
+  },
+  "downloadStartError": {
+    "message": "Could not start the download. Try again."
+  },
+  "ytHeadsUp": {
+    "message": "Heads up"
+  },
+  "ytPolicyBody": {
+    "message": "YouTube blocks downloads from browser extensions — all of them, not just ours. Our short guide has a copy-paste command that saves this exact video (link pre-filled). First time takes ~2 minutes, seconds after that."
+  },
+  "ytGuideBtn": {
+    "message": "Get this video →"
+  },
+  "downloadsTitle": {
+    "message": "Downloads"
+  },
+  "managerActive": {
+    "message": "$1 active"
+  },
+  "managerActiveQueued": {
+    "message": "$1 active · $2 queued"
+  },
+  "defaultDownloadName": {
+    "message": "download"
+  },
+  "dlSaved": {
+    "message": "✓ Saved"
+  },
+  "dlFailed": {
+    "message": "Failed"
+  },
+  "dlReportBtn": {
+    "message": "🚩 Report"
+  },
+  "reportThisError": {
+    "message": "🚩 Report this error"
+  },
+  "dlCancelled": {
+    "message": "Cancelled"
+  },
+  "dlCancelBtn": {
+    "message": "Cancel"
+  },
+  "downloadFailedLabel": {
+    "message": "Download failed: $1"
+  },
+  "phaseQueued": {
+    "message": "Queued"
+  },
+  "phaseCancelled": {
+    "message": "Cancelled"
+  },
+  "phaseMerging": {
+    "message": "Merging…"
+  },
+  "phaseWaiting": {
+    "message": "Rate-limited — retrying in $TIME$ ($PCT$% kept)",
+    "placeholders": {
+      "time": {
+        "content": "$1"
+      },
+      "pct": {
+        "content": "$2"
+      }
+    }
+  },
+  "phaseSaving": {
+    "message": "Saving…"
+  },
+  "phaseDone": {
+    "message": "Done"
+  },
+  "phaseError": {
+    "message": "Error"
+  },
+  "phaseStarting": {
+    "message": "Starting…"
+  },
+  "licenseLabel": {
+    "message": "Have a license key?"
+  },
+  "licenseLabelUpgrade": {
+    "message": "Bought lifetime? Activate your new key"
+  },
+  "licensePlaceholder": {
+    "message": "sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "activateBtn": {
+    "message": "Activate license"
+  },
+  "verifyingBtn": {
+    "message": "Verifying…"
+  },
+  "licenseActivated": {
+    "message": "License activated!"
+  },
+  "licenseInvalid": {
+    "message": "Invalid or expired license key."
+  },
+  "licenseInactive": {
+    "message": "That license is inactive — the subscription may have been cancelled or expired."
+  },
+  "licenseLimit": {
+    "message": "That license has reached its activation limit. Contact support and we'll free up a slot."
+  },
+  "licenseUtilized": {
+    "message": "This license is already active on all of its allowed installs. Reinstalling the extension uses up a slot — email support@skoolvideodownload.com and we'll free one for you right away."
+  },
+  "licenseExpired": {
+    "message": "That license has expired. If you believe it should still be active, email support@skoolvideodownload.com."
+  },
+  "licenseWrongProduct": {
+    "message": "That key belongs to a different one of our extensions, not this one."
+  },
+  "licenseNetwork": {
+    "message": "Couldn't reach the license server. Check your connection and try again."
+  },
+  "upgradeCancelled": {
+    "message": "Lifetime activated — your monthly subscription has been cancelled."
+  },
+  "upgradeCancelFailed": {
+    "message": "Lifetime activated. We couldn't cancel your monthly automatically — please cancel it so you're not billed again: "
+  },
+  "upgradeCancelLink": {
+    "message": "Cancel monthly →"
+  },
+  "footerHelp": {
+    "message": "Help"
+  },
+  "footerReport": {
+    "message": "🚩 Report a problem"
+  },
+  "closeAria": {
+    "message": "Close"
+  },
+  "reportTitle": {
+    "message": "Report a problem"
+  },
+  "reportSub": {
+    "message": "Sends a small diagnostic snapshot (extension version, plan, what was detected on this page, recent errors) straight to the developer. No page content or personal data."
+  },
+  "reportErrorPrefix": {
+    "message": "Error being reported: $1"
+  },
+  "reportNoteLabel": {
+    "message": "What went wrong?"
+  },
+  "reportOptional": {
+    "message": "(optional)"
+  },
+  "reportNotePlaceholder": {
+    "message": "e.g. The Loom video on this lesson never finishes downloading"
+  },
+  "reportEmailLabel": {
+    "message": "Email for a follow-up"
+  },
+  "reportEmailPlaceholder": {
+    "message": "you@example.com"
+  },
+  "reportSendBtn": {
+    "message": "Send report"
+  },
+  "reportSending": {
+    "message": "Sending…"
+  },
+  "reportSentBtn": {
+    "message": "✓ Sent — thank you!"
+  },
+  "reportSentEmailNote": {
+    "message": "We'll email you when it's fixed."
+  },
+  "reportClipboardFallback": {
+    "message": "Couldn't reach our server — report copied to your clipboard. Please paste it into an email to support@skoolvideodownload.com."
+  },
+  "reportServerError": {
+    "message": "Couldn't reach our server — please email support@skoolvideodownload.com."
+  },
+  "pricingTitle": {
+    "message": "Go Unlimited"
+  },
+  "pricingSub": {
+    "message": "Your free plan covers 5 downloads a week. Unlock unlimited saves at every quality."
+  },
+  "planMostPopular": {
+    "message": "🔥 MOST POPULAR"
+  },
+  "planMonthlyName": {
+    "message": "Monthly"
+  },
+  "planMonthlyTagline": {
+    "message": "Cancel anytime · no commitment"
+  },
+  "planFeatureUnlimited": {
+    "message": "Unlimited downloads — no weekly cap"
+  },
+  "planFeatureResolution": {
+    "message": "Every resolution the source offers"
+  },
+  "planFeaturePlatforms": {
+    "message": "Skool, Loom, Vimeo, YouTube & Wistia"
+  },
+  "planFeaturePrivate": {
+    "message": "100% private — processed on your device"
+  },
+  "planCtaGoUnlimited": {
+    "message": "Go unlimited"
+  },
+  "planReassure": {
+    "message": "Secure checkout · Instant access"
+  },
+  "planLifetimeName": {
+    "message": "Lifetime"
+  },
+  "modalLater": {
+    "message": "Maybe later"
+  },
+  "welcomeTitle": {
+    "message": "Welcome — Skool Video Downloader"
+  },
+  "welcomeBadge": {
+    "message": "🎓 Skool Video Downloader"
+  },
+  "welcomeH1": {
+    "message": "You're all set"
+  },
+  "welcomeSub": {
+    "message": "Save Skool lessons — and any Loom, Vimeo, YouTube or Wistia video embedded inside them — as clean MP4 files, right from your browser."
+  },
+  "howToTitle": {
+    "message": "How to download a video"
+  },
+  "step1": {
+    "message": "Open any lesson in your Skool classroom or community."
+  },
+  "step2": {
+    "message": "<strong>Press play</strong> on the video so the extension can detect the stream."
+  },
+  "step3": {
+    "message": "Click the <strong>Skool Video Downloader</strong> icon in your toolbar."
+  },
+  "step4": {
+    "message": "Pick the video, choose a quality, and hit <strong>Download</strong> — it saves straight to your Downloads folder as MP4."
+  },
+  "multiDownloadNote": {
+    "message": "Queue as many downloads as you like — they run one after another, with live progress and speed in the popup."
+  },
+  "worksAcrossTitle": {
+    "message": "Works across every player Skool uses"
+  },
+  "chipSkool": {
+    "message": "🎓 Skool native"
+  },
+  "chipLoom": {
+    "message": "🔴 Loom"
+  },
+  "chipVimeo": {
+    "message": "🎬 Vimeo"
+  },
+  "chipYoutube": {
+    "message": "▶️ YouTube"
+  },
+  "chipWistia": {
+    "message": "🟢 Wistia"
+  },
+  "platformNote": {
+    "message": "The extension auto-detects which platform each lesson uses and pulls the highest quality the source offers. Everything is processed locally on your device — no uploads, no tracking."
+  },
+  "openSkoolCta": {
+    "message": "Open Skool →"
+  },
+  "freeNote": {
+    "message": "5 downloads every week are free — no credit card required."
+  },
+  "bulkDownloadCourse": {
+    "message": "Download entire course"
+  },
+  "bulkWantVideo": {
+    "message": "Videos"
+  },
+  "bulkWantNotes": {
+    "message": "Lesson notes"
+  },
+  "bulkWantFiles": {
+    "message": "Attachments"
+  },
+  "bulkLessonCount": {
+    "message": "$COUNT$ lessons",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "bulkModuleCount": {
+    "message": "$COUNT$ modules",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "bulkLockedNote": {
+    "message": "Lessons your account cannot open yet are skipped, and listed when the run finishes."
+  },
+  "bulkProNote": {
+    "message": "Full-course backup is a Pro feature."
+  },
+  "bulkPause": {
+    "message": "Pause"
+  },
+  "bulkResumeRun": {
+    "message": "Resume"
+  },
+  "bulkCancel": {
+    "message": "Cancel"
+  },
+  "bulkPausedNote": {
+    "message": "Your progress is saved. You can close this popup or restart your browser."
+  },
+  "bulkPausedMeta": {
+    "message": "Paused at $DONE$ of $TOTAL$",
+    "placeholders": {
+      "done": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
+    }
+  },
+  "bulkResumeTitle": {
+    "message": "Unfinished backup"
+  },
+  "bulkResumeMeta": {
+    "message": "$SAVED$ of $TOTAL$ lessons already saved",
+    "placeholders": {
+      "saved": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
+    }
+  },
+  "bulkResumeGo": {
+    "message": "Resume course download"
+  },
+  "bulkRestart": {
+    "message": "Re-download everything"
+  },
+  "bulkRestartConfirm": {
+    "message": "Re-download everything?"
+  },
+  "bulkProgress": {
+    "message": "$DONE$ of $TOTAL$",
+    "placeholders": {
+      "done": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
+    }
+  },
+  "bulkSummary": {
+    "message": "Saved $SAVED$ · skipped $SKIPPED$ · failed $FAILED$",
+    "placeholders": {
+      "saved": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "bulkAgain": {
+    "message": "Back"
+  },
+  "bulkCancelled": {
+    "message": "Cancelled"
+  },
+  "bulkErrNotSignedIn": {
+    "message": "Sign in to Skool in this browser, then try again."
+  },
+  "bulkErrSchemaDrift": {
+    "message": "Skool's page layout changed, so the lesson list could not be read. Please send a problem report."
+  },
+  "bulkErrEmptyCourse": {
+    "message": "This course has no lessons yet."
+  },
+  "bulkErrNoAccess": {
+    "message": "This course is not available to your account."
+  },
+  "bulkErrRateLimited": {
+    "message": "Skool is rate-limiting this browser. Wait a few minutes and try again."
+  },
+  "bulkSkipLocked": {
+    "message": "$COUNT$ not available to your account",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "bulkSkipYoutube": {
+    "message": "$COUNT$ hosted on YouTube — see _youtube-lessons.txt",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "bulkAllSaved": {
+    "message": "All $COUNT$ lessons already saved",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  }
 }

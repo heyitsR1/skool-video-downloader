@@ -812,12 +812,27 @@ async function initBulkPanel(tabUrl, isPro) {
     bulkRenderResume(pre.alreadySaved, pre.total);
   } else if (pre.alreadySaved > 0 && pre.remaining > 0) {
     bulkRenderResume(pre.alreadySaved, pre.total);
+  } else if (pre.remaining === 0 && pre.total > 0) {
+    // Nothing left to do. Without this the panel shows "Download entire course",
+    // which does nothing at all when pressed — and a user who deleted files has
+    // no way to ask for them back, because Chrome does not tell the extension a
+    // saved file is gone. "Re-download everything" is that way.
+    bulkRenderComplete(pre.total);
   } else {
     bulkShow('bulk-idle');
   }
 }
 
+// Every lesson is already saved. The resume pane, minus the resume.
+function bulkRenderComplete(total) {
+  bulkEl('bulk-resume-title').textContent = bulkCtx?.courseTitle || '';
+  bulkEl('bulk-resume-meta').textContent = bulkT('bulkAllSaved', total);
+  bulkEl('bulk-resume-go').classList.add('hidden');
+  bulkShow('bulk-resume');
+}
+
 function bulkRenderResume(saved, total) {
+  bulkEl('bulk-resume-go').classList.remove('hidden');
   bulkEl('bulk-resume-title').textContent = bulkCtx?.courseTitle || bulkT('bulkResumeTitle');
   bulkEl('bulk-resume-meta').textContent = bulkT('bulkResumeMeta', saved, total);
   bulkShow('bulk-resume');

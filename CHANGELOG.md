@@ -22,8 +22,10 @@ notes are written from.
   into a folder per course and module.
 - Runs in the background: close the popup, keep browsing, come back to a summary.
 - Pause and resume any time, including after restarting your browser. Finished
-  lessons are never downloaded twice, and a file you delete yourself is fetched
-  again on the next run.
+  lessons are never downloaded twice. To fetch a course again from scratch — for
+  instance after deleting some of it — use **Re-download everything**; Chrome
+  does not tell an extension that a saved file was removed, so a normal re-run
+  cannot notice on its own.
 - Lessons your account cannot open yet are skipped and listed when the run
   finishes, so you always know exactly what you got.
 - Courses whose modules each hold a single lesson are saved as a flat list

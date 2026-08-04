@@ -784,7 +784,9 @@ console.log('\nmanifest store and disk check:');
     const w = build({ store: { [KEY]: manifestWith() }, search: async () => [{ exists: true }] });
     const m = await w.pruneDeletedAssets('g1', 'slug1');
     check('files that are still there are kept', !!m.lessons.l1.assets.video, true);
-    check('and nothing is logged when everything checks out', w.logged.length, 0);
+    // Logged unconditionally: a report showing "0 deleted" proves the check ran,
+    // where silence cannot be told apart from a check that never happened.
+    ok('the check reports itself even when nothing is missing', /3 recorded, 0 deleted/.test(w.logged.join(' ')));
   }
   {
     const w = build({ store: { [KEY]: manifestWith() }, search: async () => [{ exists: false }] });
@@ -812,7 +814,7 @@ console.log('\nmanifest store and disk check:');
     const w = build({ store: { [KEY]: manifestWith() }, search: async () => [{ id: 10 }] });
     const m = await w.pruneDeletedAssets('g1', 'slug1');
     check('a record with no exists field keeps the file', m.lessons.l1.assets.video.path, 'v');
-    check('and nothing is re-queued', w.logged.length, 0);
+    ok('and nothing is re-queued', /0 deleted/.test(w.logged.join(' ')));
   }
   // A failed check is not a deletion either.
   {
