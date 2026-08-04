@@ -94,7 +94,7 @@
 
   "closeAria": { "message": "Schließen" },
   "reportTitle": { "message": "Problem melden" },
-  "reportSub": { "message": "Sendet einen kleinen Diagnose-Schnappschuss (Version, Plan, was auf dieser Seite erkannt wurde, letzte Fehler) direkt an den Entwickler. Keine Seiteninhalte oder persönlichen Daten." },
+  "reportSub": { "message": "Sendet Version, Plan, was hier erkannt wurde und letzte Fehler. Keine Seiteninhalte, keine persönlichen Daten." },
   "reportErrorPrefix": { "message": "Gemeldeter Fehler: $1" },
   "reportNoteLabel": { "message": "Was ist schiefgelaufen?" },
   "reportOptional": { "message": "(optional)" },

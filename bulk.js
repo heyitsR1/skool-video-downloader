@@ -558,7 +558,8 @@ function runLogDocument({ courseTitle, group, courseSlug, version, userAgent, st
   ];
   if (summary) {
     out.push(`Result:     ${summary.total} lessons — ${summary.saved} saved, `
-      + `${summary.skipped} skipped, ${summary.failed} failed`, '');
+      + `${summary.skipped} skipped, ${summary.failed} failed`
+      + (summary.notAttempted ? `, ${summary.notAttempted} not attempted` : ''), '');
   }
   // Every lesson appears, including ones that produced nothing. A lesson missing
   // from this list would be the same invisibility the file exists to remove.
@@ -721,6 +722,9 @@ function bulkRunEndLine(summary) {
   const parts = [`${summary.saved} saved`];
   if (summary.skipped) parts.push(`${summary.skipped} skipped (${describeTally({ counts: summary.skippedByReason })})`);
   if (summary.failed) parts.push(`${summary.failed} failed (${describeTally({ counts: summary.failedByReason })})`);
+  // Stated, not implied by subtraction: a cancelled run's untouched lessons are
+  // the first thing anyone reading the line needs to know about.
+  if (summary.notAttempted) parts.push(`${summary.notAttempted} not attempted`);
   return clipLogLine(`done ${summary.total}les: ${parts.join(', ')}`);
 }
 
@@ -738,7 +742,12 @@ function bulkRunEndLine(summary) {
 // direction: 'locked' is deliberately not a settling kind, so such a lesson is
 // retried on a later run rather than written off.
 //
-// The playlist needs no Referer, so no header rules are involved on this path.
+// Header rules DO apply to this path — see resolveBulkLesson in background.js.
+// This file used to claim the opposite ("the playlist needs no Referer, so no
+// header rules are involved"), and the course run believed it and sent none;
+// every native lesson in every course backup was skipped as 'no-qualities'.
+// Nothing here decides that either way, so do not read a header policy out of
+// this comment: the fetch site is the only place that knows.
 
 const NATIVE_HOST_PRIMARY = 'stream.video.skool.com';
 const NATIVE_HOST_FALLBACK = 'stream.mux.com';
@@ -816,9 +825,18 @@ function mergeManifest(existing, scanned) {
 
 // Every lesson lands in exactly one bucket, and the buckets sum to the total —
 // a run that saved 12 of 40 lessons must never be able to present as "done".
-function runSummary(records) {
+//
+// `courseTotal` is how many lessons the run set out to do. A cancelled run has
+// records only for the lessons it reached, and without this the total is taken
+// from that list — so cancelling a 40-lesson course at lesson 3 reported
+// "3 lessons — 3 saved", which is the exact "presents as done" failure the
+// paragraph above forbids. The lessons never reached are their own bucket:
+// counting them as failed would be just as untrue in the other direction.
+function runSummary(records, courseTotal) {
   const list = Array.isArray(records) ? records : [];
-  const out = { total: list.length, saved: 0, skipped: 0, failed: 0, skippedByReason: {}, failedByReason: {} };
+  const total = Math.max(list.length, Number(courseTotal) || 0);
+  const out = { total, notAttempted: total - list.length,
+    saved: 0, skipped: 0, failed: 0, skippedByReason: {}, failedByReason: {} };
   for (const r of list) {
     if (r?.status === 'saved') out.saved++;
     else if (r?.status === 'skipped') {

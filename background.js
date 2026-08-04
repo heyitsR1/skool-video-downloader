@@ -2164,11 +2164,19 @@ async function resolveBulkLesson(lesson) {
       // Both hosts serve the same signed playlist; the fallback covers one of
       // them going away.
       //
-      // Both also need a Referer. The CDN 403s any playlist fetch whose Referer
-      // does not match the player's, and a service-worker fetch sends none —
-      // measured against a real course, where the native lesson failed as
-      // 'no-qualities' with a 403 until this rule was applied. The single-lesson
-      // path has always done this; only the course run was missing it.
+      // Both also go out with the page's Referer and Origin, because a bare
+      // service-worker fetch 403'd against a real course until they were set.
+      //
+      // Do NOT restate that as "the CDN requires a Referer" — measured
+      // 2026-08-04 against a real native-video course, where the master, the
+      // rendition and a segment each served 200 with the Referer suppressed
+      // entirely. So the Referer is not what the CDN objects to. What a page
+      // fetch cannot
+      // reproduce is the `Origin: chrome-extension://…` an extension sends, and
+      // that is the likelier discriminator. Both headers are set because the
+      // pair is what was observed to work; which one carries it is unconfirmed,
+      // so neither may be dropped as redundant without re-measuring from the
+      // worker itself.
       //
       // Resolving IS the probe: the plan fetched the master once to test it and
       // then let the resolver fetch it again. On a 40-lesson course that is 40
@@ -2176,8 +2184,13 @@ async function resolveBulkLesson(lesson) {
       const headers = { Referer: lesson.lessonUrl, Origin: 'https://www.skool.com' };
       let qualities = null, firstError = null;
       try {
-        await applyHeaderRules(BULK_RESOLVE_RULE_ID, play.masterUrl, headers);
         for (const url of [play.masterUrl, play.fallbackUrl]) {
+          // Per URL, not once for the master: applyHeaderRules scopes its rule to
+          // the sample URL's host, and the two hosts are unrelated
+          // (stream.video.skool.com vs stream.mux.com). Applying it once for the
+          // master left the fallback fetch bare — so the fallback would have
+          // failed in exactly the situation it exists for.
+          await applyHeaderRules(BULK_RESOLVE_RULE_ID, url, headers);
           try {
             const resolved = await resolveQualities({ platform: 'skool', url });
             qualities = resolved?.qualities || [];
@@ -2725,7 +2738,9 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
     }
   }
 
-  const summary = runSummary(records);
+  // The course total, not records.length: a cancelled run has records only for
+  // the lessons it reached.
+  const summary = runSummary(records, total);
   const cancelled = bulkAbort.cancel;
 
   // Two or three lines, whatever the course size: the counts, then the reasons

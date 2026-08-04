@@ -881,6 +881,11 @@ function bulkRenderDone(msg) {
     + (msg.cancelled ? ` · ${bulkT('bulkCancelled')}` : '');
   list.textContent = '';
   const add = (text) => { const li = document.createElement('li'); li.textContent = text; list.appendChild(li); };
+  // Listed first, because it is the largest number on a cancelled run and the
+  // only one that says the backup is incomplete. Without it the panel showed
+  // "Saved 3 · skipped 0 · failed 0" for a 40-lesson course stopped at lesson 3,
+  // which the run log now contradicts.
+  if (s.notAttempted) add(bulkT('bulkNotAttempted', s.notAttempted));
   if (s.skippedByReason?.locked) add(bulkT('bulkSkipLocked', s.skippedByReason.locked));
   if (s.skippedByReason?.youtube) add(bulkT('bulkSkipYoutube', s.skippedByReason.youtube));
   for (const f of msg.failedDetail || []) add(`${f.title} — ${f.reason}`);

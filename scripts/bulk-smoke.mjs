@@ -583,7 +583,26 @@ console.log('\nmanifest / resume (G1)');
   // A status nobody recognises must land in a bucket, not fall out of the count.
   const odd = bulk.runSummary([{ status: 'saved' }, { status: 'in-flight' }, null]);
   check('an unrecognised status still balances', odd.saved + odd.skipped + odd.failed, odd.total);
-  check('empty run', bulk.runSummary([]), { total: 0, saved: 0, skipped: 0, failed: 0, skippedByReason: {}, failedByReason: {} });
+  check('empty run', bulk.runSummary([]),
+    { total: 0, notAttempted: 0, saved: 0, skipped: 0, failed: 0, skippedByReason: {}, failedByReason: {} });
+
+  // A cancelled run has records only for the lessons it reached. Taking the total
+  // from that list let a 40-lesson course cancelled at lesson 3 report
+  // "3 lessons — 3 saved", i.e. a partial backup presenting as a complete one.
+  const stopped = bulk.runSummary(Array(3).fill({ status: 'saved' }), 40);
+  check('a cancelled run keeps the course total', stopped.total, 40);
+  check('and says how many it never reached', stopped.notAttempted, 37);
+  check('every lesson is still in exactly one bucket',
+    stopped.saved + stopped.skipped + stopped.failed + stopped.notAttempted, stopped.total);
+  check('the end line states it rather than implying it',
+    bulk.bulkRunEndLine(stopped), 'done 40les: 3 saved, 37 not attempted');
+  // A complete run must not grow a "0 not attempted" tail.
+  check('a complete run says nothing about it',
+    bulk.bulkRunEndLine(bulk.runSummary(Array(4).fill({ status: 'saved' }), 4)), 'done 4les: 4 saved');
+  // A course that gained lessons mid-run must not produce a negative bucket.
+  const extra = bulk.runSummary(Array(5).fill({ status: 'saved' }), 3);
+  check('more records than expected does not go negative', extra.notAttempted, 0);
+  check('and the total follows the records', extra.total, 5);
 }
 
 console.log('\nnativePlaybackFrom (§2.5)');

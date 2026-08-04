@@ -94,7 +94,7 @@
 
   "closeAria": { "message": "Fermer" },
   "reportTitle": { "message": "Signaler un problème" },
-  "reportSub": { "message": "Envoie un petit rapport de diagnostic (version de l'extension, forfait, ce qui a été détecté sur cette page, erreurs récentes) directement au développeur. Aucun contenu de page ni donnée personnelle." },
+  "reportSub": { "message": "Envoie la version, votre forfait, ce qui a été détecté ici et les erreurs récentes. Aucun contenu de page ni donnée personnelle." },
   "reportErrorPrefix": { "message": "Erreur signalée : $1" },
   "reportNoteLabel": { "message": "Qu'est-ce qui n'a pas fonctionné ?" },
   "reportOptional": { "message": "(facultatif)" },

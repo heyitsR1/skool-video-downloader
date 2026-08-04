@@ -296,7 +296,7 @@
     "message": "Report a problem"
   },
   "reportSub": {
-    "message": "Sends a small diagnostic snapshot (extension version, plan, what was detected on this page, recent errors) straight to the developer. No page content or personal data."
+    "message": "Sends the extension version, your plan, what was detected here and recent errors. No page content or personal data."
   },
   "reportErrorPrefix": {
     "message": "Error being reported: $1"
@@ -564,6 +564,7 @@
       }
     }
   },
+  "bulkNotAttempted": { "message": "$COUNT$ not attempted — the run was cancelled first", "placeholders": { "count": { "content": "$1" } } },
   "bulkSkipYoutube": {
     "message": "$COUNT$ hosted on YouTube — see _youtube-lessons.txt",
     "placeholders": {

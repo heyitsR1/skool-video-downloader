@@ -242,6 +242,29 @@ body {
 .modal__close { position: absolute; top: 10px; right: 12px; border: none; background: none; font-size: 24px; line-height: 1; color: var(--muted); cursor: pointer; }
 .modal__title { font-size: 19px; font-weight: 800; text-align: center; }
 .modal__sub { font-size: 12px; color: var(--muted); text-align: center; margin: 6px 0 16px; line-height: 1.45; }
+/* Explanatory small print, not a pitch: the report sheet's blurb is there to
+   reassure, so it gives its height back to the fields and the Send button. */
+.modal__sub--sm { font-size: 10.5px; margin: 5px 0 12px; }
+
+/* A sheet whose fields scroll under a fixed action row. `.modal__sheet` scrolls
+   as a whole, which is right for the pricing modal — you read it top to bottom —
+   and wrong for a form, where the submit button has to stay in sight. */
+.modal__sheet--form { display: flex; flex-direction: column; overflow: hidden; }
+.modal__sheet--form .modal__scroll {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  /* Bleed to the sheet's edge so a focus ring is not clipped by the scrollport. */
+  margin: 0 -20px; padding: 0 20px;
+  /* Scroll shadows. macOS hides overlay scrollbars until you scroll, so without
+     these the email field below the fold is invisible and unguessable. The
+     `local` white covers pin to the content and the `scroll` shadows to the
+     frame, so each edge's shadow appears only when there is more that way. */
+  background:
+    linear-gradient(#fff, rgba(255,255,255,0)) top    / 100% 14px no-repeat local,
+    linear-gradient(rgba(255,255,255,0), #fff) bottom / 100% 14px no-repeat local,
+    radial-gradient(farthest-side at 50% 0,    rgba(27,24,48,.13), transparent) top    / 100% 6px no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, rgba(27,24,48,.13), transparent) bottom / 100% 6px no-repeat scroll;
+}
+.modal__sheet--form .modal__actions { flex: none; padding-top: 12px; }
 
 .plan-card { display: block; border: 1.5px solid var(--line); border-radius: 12px; padding: 14px; text-decoration: none; color: var(--ink); margin-bottom: 10px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
 .plan-card:hover { border-color: var(--accent); }

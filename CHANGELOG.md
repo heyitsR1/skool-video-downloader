@@ -38,6 +38,21 @@ notes are written from.
   and what was saved, skipped or failed for it — including lessons that produced
   no file. Send it with a problem report if something looks missing.
 
+### Fixed
+- **The Send button in "Report a problem" is on screen again.** The explanatory
+  paragraph above it ran to four lines, and with a failure on record — the state
+  you are actually in when you open the form — the button sat below the bottom of
+  the popup at every popup height. The blurb is shorter and smaller, and the
+  fields now scroll under a Send button that stays put, so no amount of text
+  above it can push it out of sight.
+- A cancelled course backup no longer reports its partial result as a whole one.
+  Cancelling a 40-lesson course after 3 lessons summarised the run as
+  "3 lessons — 3 saved"; it now says 40 lessons, 3 saved, 37 not attempted, in
+  the summary, the run log and the debug log alike.
+- A course backup falling back to the second playback host now sends that host
+  the same headers as the first. It was given the first host's rule, so the
+  fallback would have failed in precisely the situation it exists for.
+
 ## 1.4.0 — 2026-08-01
 
 ### Removed

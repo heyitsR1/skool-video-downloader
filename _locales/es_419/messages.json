@@ -94,7 +94,7 @@
 
   "closeAria": { "message": "Cerrar" },
   "reportTitle": { "message": "Reportar un problema" },
-  "reportSub": { "message": "Envía un pequeño resumen de diagnóstico (versión de la extensión, plan, lo detectado en esta página, errores recientes) directamente al desarrollador. Sin contenido de la página ni datos personales." },
+  "reportSub": { "message": "Envía la versión, tu plan, lo detectado aquí y los errores recientes. Sin contenido de la página ni datos personales." },
   "reportErrorPrefix": { "message": "Error reportado: $1" },
   "reportNoteLabel": { "message": "¿Qué salió mal?" },
   "reportOptional": { "message": "(opcional)" },
