@@ -2248,3 +2248,123 @@ function youtubeShortcut(url) {
 function saveYoutubeStub(base, url) {
   return saveTextFile(`${base}.url`, youtubeShortcut(url), 'text/plain');
 }
+
+// ── Manifest store (G1/G2) ────────────────────────────────────────────────────
+// storage.local, so the record of completed work survives a browser restart. The
+// live progress lives in storage.session and is disposable; this is not.
+
+function manifestKey(group, courseSlug) { return `bulk:${group}/${courseSlug}`; }
+
+// Always returns a usable shape. A record that survived a partial write, or an
+// older layout, must not crash every later read — the manifest IS the record of
+// completed work, and a throw here would look like "nothing was ever saved".
+function normalizeManifest(m) {
+  const lessons = (m && typeof m === 'object' && m.lessons && typeof m.lessons === 'object') ? m.lessons : {};
+  return { ...(m && typeof m === 'object' ? m : {}), lessons };
+}
+
+async function loadManifest(group, courseSlug) {
+  const key = manifestKey(group, courseSlug);
+  try {
+    const got = await chrome.storage.local.get(key);
+    return normalizeManifest(got[key]);
+  } catch (e) {
+    // Reporting an empty manifest here would re-download the whole course, so
+    // the failure has to be visible rather than absorbed.
+    bulkLog(`manifest read failed for ${courseSlug}: ${String(e.message).slice(0, 80)}`);
+    return { lessons: {} };
+  }
+}
+
+async function saveManifest(group, courseSlug, manifest) {
+  await chrome.storage.local.set({
+    [manifestKey(group, courseSlug)]: { ...normalizeManifest(manifest), updatedAt: Date.now() },
+  });
+}
+
+async function clearManifest(group, courseSlug) {
+  await chrome.storage.local.remove(manifestKey(group, courseSlug));
+}
+
+// Every manifest write is read-modify-write on one storage key, so two
+// overlapping calls both read the same object and the second's set() discards
+// the first's asset. The debug log above was bitten by exactly this, and here it
+// would cost a file the user believes is saved. Chain every write onto the last.
+let manifestChain = Promise.resolve();
+function withManifestWrite(fn) {
+  const run = manifestChain.then(fn, fn);
+  manifestChain = run.then(() => {}, () => {});
+  return run;
+}
+
+// Record one asset immediately. Written per asset rather than per lesson so a run
+// killed mid-lesson does not lose the attachment it just saved.
+function recordAsset(group, courseSlug, lessonId, patch) {
+  return withManifestWrite(async () => {
+    const manifest = await loadManifest(group, courseSlug);
+    const prev = manifest.lessons[lessonId] || { assets: {} };
+    const assets = { ...normalizeAssets(prev) };
+    if (patch.video) assets.video = patch.video;
+    if (patch.notes) assets.notes = patch.notes;
+    if (patch.file) assets.files = { ...assets.files, [patch.file.fileId]: patch.file.slot };
+    manifest.lessons[lessonId] = {
+      ...prev,
+      assets,
+      status: patch.status ?? prev.status ?? null,
+      reason: patch.reason ?? prev.reason ?? null,
+    };
+    await saveManifest(group, courseSlug, manifest);
+  });
+}
+
+// Drop manifest entries whose file the user has since deleted, so a resume redoes
+// them. Three cases, and the third is the one that matters:
+//
+//   record found, exists true  → the file is there, skip it
+//   record found, exists false → the user deleted it, redo that asset
+//   no record at all           → the download history was cleared. That is
+//                                UNKNOWN, not missing. Trust the manifest.
+//
+// Getting the third wrong turns "I cleared my downloads list" into a full
+// re-download of a multi-gigabyte course. Reading `exists` any other way is
+// meaningless: the browser does not watch for file removal, and calling search()
+// is what triggers the check.
+async function pruneDeletedAssets(group, courseSlug) {
+  const manifest = await loadManifest(group, courseSlug);
+  const ids = [];
+  for (const rec of Object.values(manifest.lessons)) {
+    const a = normalizeAssets(rec);
+    for (const slot of [a.video, a.notes, ...Object.values(a.files)]) {
+      if (slot && typeof slot.downloadId === 'number') ids.push(slot.downloadId);
+    }
+  }
+  if (!ids.length) return manifest;
+
+  const missing = new Set();
+  let unknown = 0, failed = 0;
+  for (const id of ids) {
+    let items = [];
+    try { items = await chrome.downloads.search({ id }); }
+    catch { failed++; continue; }               // a failed check is not a deletion
+    if (!items.length) { unknown++; continue; } // history cleared — trust the manifest
+    if (items[0].exists === false) missing.add(id);
+  }
+
+  // Logged whenever anything was inconclusive, even with nothing to re-queue:
+  // "it re-downloaded everything" and "it skipped everything" are both explained
+  // by these counts, and neither is answerable without them.
+  if (missing.size || unknown || failed) {
+    bulkLog(`disk check: ${ids.length} recorded, ${missing.size} deleted, ${unknown} not in history, ${failed} unreadable`);
+  }
+  if (!missing.size) return manifest;
+
+  const drop = slot => (slot && missing.has(slot.downloadId)) ? null : slot;
+  for (const [lessonId, rec] of Object.entries(manifest.lessons)) {
+    const a = normalizeAssets(rec);
+    const files = {};
+    for (const [fid, slot] of Object.entries(a.files)) { const kept = drop(slot); if (kept) files[fid] = kept; }
+    manifest.lessons[lessonId] = { ...rec, assets: { video: drop(a.video), notes: drop(a.notes), files } };
+  }
+  await withManifestWrite(() => saveManifest(group, courseSlug, manifest));
+  return manifest;
+}

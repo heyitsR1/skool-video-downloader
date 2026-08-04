@@ -692,5 +692,157 @@ console.log('\nasset writers:');
   }
 }
 
+// ── 10. Manifest store and disk verification (G1/G2) ─────────────────────────
+// The manifest is the only record of what is on disk. Two ways it can be wrong,
+// both expensive and both silent: forget a file that IS there and re-download a
+// multi-gigabyte course, or keep a record of a file that ISN'T and never restore
+// it. The "no download record at all" case is the one that decides which.
+console.log('\nmanifest store and disk check:');
+{
+  const { createRequire } = await import('node:module');
+  const bulk = createRequire(import.meta.url)(path.join(ROOT, 'bulk.js'));
+
+  const build = ({ store = {}, search } = {}) => {
+    const code = extract('background.js',
+      ['manifestKey', 'normalizeManifest', 'loadManifest', 'saveManifest', 'clearManifest',
+       'manifestChain', 'withManifestWrite', 'recordAsset', 'pruneDeletedAssets']);
+    const logged = [];
+    const api = new Function('d', `
+      const { chrome, normalizeAssets, bulkLog } = d;
+      ${code}
+      return { loadManifest, saveManifest, clearManifest, recordAsset, pruneDeletedAssets, manifestKey };
+    `)({
+      chrome: {
+        storage: { local: {
+          // Structured-clone on both sides, like the real API. Handing back a
+          // live reference would let an in-memory mutation look like a
+          // successful write and hide a missing set().
+          get: async k => (k in store ? { [k]: structuredClone(store[k]) } : {}),
+          set: async o => { for (const [k, v] of Object.entries(o)) store[k] = structuredClone(v); },
+          remove: async k => { delete store[k]; },
+        } },
+        downloads: { search: search || (async () => []) },
+      },
+      normalizeAssets: bulk.normalizeAssets,
+      bulkLog: m => logged.push(m),
+    });
+    return { ...api, store, logged };
+  };
+  const KEY = 'bulk:g1/slug1';
+
+  // A record that survived a partial write must not crash every later read —
+  // a throw here reads as "nothing was ever saved" and re-downloads everything.
+  for (const [label, bad] of [['no lessons key', { updatedAt: 1 }], ['lessons is a string', { lessons: 'x' }],
+                              ['lessons is null', { lessons: null }], ['not an object', 42]]) {
+    const m = await build({ store: { [KEY]: bad } }).loadManifest('g1', 'slug1');
+    check(`a malformed manifest still loads (${label})`, typeof m.lessons, 'object');
+  }
+  check('a missing manifest is empty, not undefined',
+    (await build().loadManifest('g1', 'slug1')).lessons, {});
+  {
+    const m = build({ store: { [KEY]: { lessons: {} } } });
+    m.store[KEY] = { lessons: {} };
+    let threw = false;
+    try { await m.recordAsset('g1', 'slug1', 'l1', { video: { path: 'v' } }); } catch { threw = true; }
+    ok('recording against a malformed manifest does not throw', !threw);
+  }
+
+  // Overlapping writes: read-modify-write on one key, so without serialising,
+  // the second set() discards the first's asset. This file's own debug log was
+  // bitten by exactly this; here it costs a file the user believes is saved.
+  {
+    const w = build();
+    await Promise.all([
+      w.recordAsset('g1', 'slug1', 'l1', { video: { path: 'v', downloadId: 1 } }),
+      w.recordAsset('g1', 'slug1', 'l2', { notes: { path: 'n', downloadId: 2 } }),
+      w.recordAsset('g1', 'slug1', 'l3', { file: { fileId: 'a'.repeat(32), slot: { path: 'f', downloadId: 3 } } }),
+    ]);
+    check('concurrent writes do not discard each other',
+      Object.keys(w.store[KEY].lessons).sort(), ['l1', 'l2', 'l3']);
+  }
+  {
+    const w = build();
+    await Promise.all([
+      w.recordAsset('g1', 'slug1', 'l1', { video: { path: 'v' } }),
+      w.recordAsset('g1', 'slug1', 'l1', { notes: { path: 'n' } }),
+      w.recordAsset('g1', 'slug1', 'l1', { file: { fileId: 'b'.repeat(32), slot: { path: 'f' } } }),
+    ]);
+    const a = w.store[KEY].lessons.l1.assets;
+    check('three assets on one lesson all survive',
+      { v: !!a.video, n: !!a.notes, f: Object.keys(a.files).length }, { v: true, n: true, f: 1 });
+  }
+
+  // The disk check. Three outcomes, and the third is the one that matters.
+  const manifestWith = slots => ({ lessons: { l1: { status: 'saved', assets: {
+    video: { path: 'v', downloadId: 10 }, notes: { path: 'n', downloadId: 11 },
+    files: { ['c'.repeat(32)]: { path: 'f', downloadId: 12 } },
+  } } }, ...slots });
+
+  {
+    const w = build({ store: { [KEY]: manifestWith() }, search: async () => [{ exists: true }] });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('files that are still there are kept', !!m.lessons.l1.assets.video, true);
+    check('and nothing is logged when everything checks out', w.logged.length, 0);
+  }
+  {
+    const w = build({ store: { [KEY]: manifestWith() }, search: async () => [{ exists: false }] });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('a deleted video is re-queued', m.lessons.l1.assets.video, null);
+    check('a deleted notes file is re-queued', m.lessons.l1.assets.notes, null);
+    check('a deleted attachment is dropped from the map', Object.keys(m.lessons.l1.assets.files).length, 0);
+    ok('and the re-queue is logged', /3 deleted/.test(w.logged.join(' ')));
+    check('the pruning is persisted, not just returned', w.store[KEY].lessons.l1.assets.video, null);
+  }
+  // THE case: clearing Chrome's download history empties search(), which is
+  // "unknown", never "missing". Reading it as missing re-downloads everything.
+  {
+    const w = build({ store: { [KEY]: manifestWith() }, search: async () => [] });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('a cleared download history keeps the video', m.lessons.l1.assets.video.path, 'v');
+    check('and the notes', m.lessons.l1.assets.notes.path, 'n');
+    check('and the attachment', Object.keys(m.lessons.l1.assets.files).length, 1);
+    ok('and says so, so "it skipped everything" is answerable', /3 not in history/.test(w.logged.join(' ')));
+  }
+  // `exists` absent is not `exists: false`. Chrome omits the field in some
+  // states, and a falsy test would read every one of those as a deleted file and
+  // re-download the course. Only an explicit false means the user deleted it.
+  {
+    const w = build({ store: { [KEY]: manifestWith() }, search: async () => [{ id: 10 }] });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('a record with no exists field keeps the file', m.lessons.l1.assets.video.path, 'v');
+    check('and nothing is re-queued', w.logged.length, 0);
+  }
+  // A failed check is not a deletion either.
+  {
+    const w = build({ store: { [KEY]: manifestWith() }, search: async () => { throw new Error('nope'); } });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('an unreadable download record keeps the file', m.lessons.l1.assets.video.path, 'v');
+    ok('and is counted separately from an empty history', /3 unreadable/.test(w.logged.join(' ')));
+  }
+  // Mixed: only the deleted one goes.
+  {
+    const w = build({
+      store: { [KEY]: manifestWith() },
+      search: async ({ id }) => (id === 11 ? [{ exists: false }] : [{ exists: true }]),
+    });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('only the deleted asset is re-queued',
+      { video: !!m.lessons.l1.assets.video, notes: m.lessons.l1.assets.notes, files: Object.keys(m.lessons.l1.assets.files).length },
+      { video: true, notes: null, files: 1 });
+    check('the lesson keeps its prior status', m.lessons.l1.status, 'saved');
+  }
+  {
+    const w = build({ store: { [KEY]: { lessons: {} } }, search: async () => { throw new Error('x'); } });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('an empty manifest checks nothing', { lessons: m.lessons, logged: w.logged.length }, { lessons: {}, logged: 0 });
+  }
+  {
+    const w = build({ store: { [KEY]: { lessons: { l1: { assets: { video: { path: 'v' } } } } } },
+      search: async () => [{ exists: false }] });
+    const m = await w.pruneDeletedAssets('g1', 'slug1');
+    check('a slot with no downloadId is never checked or dropped', m.lessons.l1.assets.video.path, 'v');
+  }
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);
