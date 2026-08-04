@@ -26,6 +26,8 @@ notes are written from.
   again on the next run.
 - Lessons your account cannot open yet are skipped and listed when the run
   finishes, so you always know exactly what you got.
+- Courses whose modules each hold a single lesson are saved as a flat list
+  rather than a folder per file, named after the module you clicked.
 - YouTube-hosted lessons are collected into `_youtube-lessons.txt` for the
   download guide, since they cannot be saved in the browser.
 
