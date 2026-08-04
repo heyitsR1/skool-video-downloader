@@ -796,6 +796,9 @@ const RULE_RANGE_DOWNLOAD = 1000000; // 1000000–1099999
 const downloadRuleId = (jobId) => RULE_RANGE_DOWNLOAD + (jobId % 100000);
 const resolveRuleId = (tabId) =>
   RULE_RANGE_RESOLVE + (tabId > 0 ? tabId % 90000 : Math.floor(Math.random() * 90000));
+// Outside the tab-derived span above, so a course run and a popup resolving a
+// quality picker at the same moment cannot remove each other's rule.
+const BULK_RESOLVE_RULE_ID = RULE_RANGE_RESOLVE + 99999;
 
 async function applyHeaderRules(ruleId, sampleUrl, headers) {
   if (!headers || (!headers.Referer && !headers.Origin)) return false;
@@ -1318,7 +1321,12 @@ function saveViaOffscreenAnchor(filename, size) {
     }, SAVE_START_TIMEOUT_MS);
 
     sendToOffscreen({ type: 'SAVE_CLICK', filename }).then((res) => {
-      if (!res?.success) finish(reject, new Error(res?.error || 'Save failed'));
+      if (!res?.success) { finish(reject, new Error(res?.error || 'Save failed')); return; }
+      // The offscreen document starts the download itself and hands back the id,
+      // so there is nothing to identify after the fact. The onCreated listener
+      // and the poll below stay for the anchor fallback, which cannot report one.
+      if (typeof res.downloadId === 'number') finish(resolve, res.downloadId);
+      else if (res.fallback) svdLog('save', `save fell back to the anchor: ${String(res.fallback).slice(0, 90)}`);
     });
   });
 }
@@ -2131,22 +2139,37 @@ async function resolveBulkLesson(lesson) {
       if (!play.ok) return { kind: 'skip', reason: 'locked' };
 
       // Both hosts serve the same signed playlist; the fallback covers one of
-      // them going away. Neither needs a Referer.
+      // them going away.
+      //
+      // Both also need a Referer. The CDN 403s any playlist fetch whose Referer
+      // does not match the player's, and a service-worker fetch sends none —
+      // measured against a real course, where the native lesson failed as
+      // 'no-qualities' with a 403 until this rule was applied. The single-lesson
+      // path has always done this; only the course run was missing it.
       //
       // Resolving IS the probe: the plan fetched the master once to test it and
       // then let the resolver fetch it again. On a 40-lesson course that is 40
       // wasted round trips against a token that is already ticking.
+      const headers = { Referer: lesson.lessonUrl, Origin: 'https://www.skool.com' };
       let qualities = null, firstError = null;
-      for (const url of [play.masterUrl, play.fallbackUrl]) {
-        try {
-          const resolved = await resolveQualities({ platform: 'skool', url });
-          qualities = resolved?.qualities || [];
-          if (qualities.length) break;
-        } catch (e) {
-          firstError = firstError || e;
-          qualities = null;
+      try {
+        await applyHeaderRules(BULK_RESOLVE_RULE_ID, play.masterUrl, headers);
+        for (const url of [play.masterUrl, play.fallbackUrl]) {
+          try {
+            const resolved = await resolveQualities({ platform: 'skool', url });
+            qualities = resolved?.qualities || [];
+            if (qualities.length) break;
+          } catch (e) {
+            firstError = firstError || e;
+            qualities = null;
+          }
         }
+      } finally {
+        await removeHeaderRules(BULK_RESOLVE_RULE_ID);
       }
+      // Carried onto every quality: the rule above covers resolution only, and
+      // runJob re-applies these for the segment fetches that follow.
+      for (const q of qualities || []) if (!q.headers) q.headers = headers;
       if (!qualities || !qualities.length) {
         return { kind: 'skip', reason: 'no-qualities',
           detail: firstError ? `both playback hosts failed: ${String(firstError.message).slice(0, 90)}`
@@ -2170,19 +2193,33 @@ async function resolveBulkLesson(lesson) {
         return { kind: 'skip', reason: 'missing-source',
           detail: `no ${lesson.sourceKind} id in ${String(lesson.sourceRef).slice(0, 90)}` };
       }
+      // Domain-restricted Vimeo is common on Skool, and some Loom and Wistia
+      // embeds also validate the Referer on the resolution fetch. The
+      // single-lesson path injects the lesson URL for exactly this; a course run
+      // that skipped it would report 'no-qualities' on videos that play fine.
+      const EMBED_API_HOST = { vimeo: 'player.vimeo.com', loom: 'www.loom.com', wistia: 'fast.wistia.net' };
+      const apiHost = EMBED_API_HOST[lesson.sourceKind];
       let resolved;
       try {
+        if (apiHost) {
+          await applyHeaderRules(BULK_RESOLVE_RULE_ID, `https://${apiHost}/`, { Referer: lesson.lessonUrl });
+        }
         resolved = await resolveQualities({
           platform: lesson.sourceKind, sourceId, pageUrl: lesson.lessonUrl,
         });
       } catch (e) {
         return { kind: 'skip', reason: 'no-qualities',
           detail: `${lesson.sourceKind}: ${String(e.message).slice(0, 90)}` };
+      } finally {
+        if (apiHost) await removeHeaderRules(BULK_RESOLVE_RULE_ID);
       }
       const qualities = resolved?.qualities || [];
       if (!qualities.length) {
         return { kind: 'skip', reason: 'no-qualities', detail: `${lesson.sourceKind} returned no renditions` };
       }
+      // Same as the single-lesson path: the download step re-injects these for
+      // token- and domain-gated CDN fetches.
+      for (const q of qualities) if (!q.headers) q.headers = { Referer: lesson.lessonUrl };
       return { kind: 'qualities', qualities, platform: lesson.sourceKind };
     }
 

@@ -439,16 +439,24 @@ console.log('\nlesson media resolution:');
   const { createRequire } = await import('node:module');
   const bulk = createRequire(import.meta.url)(path.join(ROOT, 'bulk.js'));
 
+  let headerRules = [];
   const build = (deps = {}) => {
+    headerRules = [];
     const code = extract('background.js', ['resolveBulkLesson', 'embedSourceId']);
     return new Function('d', `
-      const { SOURCE, fetchPageProps, nativePlaybackFrom, resolveQualities, bulkPathOf, findLessonMeta } = d;
+      const { SOURCE, fetchPageProps, nativePlaybackFrom, resolveQualities, bulkPathOf, findLessonMeta,
+              applyHeaderRules, removeHeaderRules, BULK_RESOLVE_RULE_ID } = d;
       ${code}
       return { resolveBulkLesson, embedSourceId };
     `)({
       SOURCE: bulk.SOURCE,
       nativePlaybackFrom: bulk.nativePlaybackFrom,
       findLessonMeta: bulk.findLessonMeta,
+      // Recorded rather than stubbed away: a resolve that goes out without the
+      // Referer rule is a 403, and that is not visible in the result.
+      applyHeaderRules: async (id, url, headers) => { headerRules.push({ id, url, headers }); return true; },
+      removeHeaderRules: async (id) => { headerRules.push({ removed: id }); },
+      BULK_RESOLVE_RULE_ID: 999999,
       bulkPathOf: u => { try { return new URL(u).pathname; } catch { return String(u); } },
       fetchPageProps: async () => ({ pageProps: null, status: 500, finalUrl: 'https://x/y' }),
       resolveQualities: async () => ({ qualities: [] }),
@@ -465,6 +473,40 @@ console.log('\nlesson media resolution:');
   check('an unnamed host skips as unknown', { kind: unknown.kind, reason: unknown.reason },
     { kind: 'skip', reason: 'unknown' });
   ok('and unknown is the reason that settles for good', bulk.SETTLED_SKIP_KINDS.includes(unknown.reason));
+
+  // The Referer. Measured against a real course: every native lesson resolved as
+  // 'no-qualities' with a 403 until the rule below was applied, because a
+  // service-worker fetch sends no Referer and the CDN requires the player's.
+  // Nothing about the return value shows this — the lesson just looks unplayable.
+  {
+    const b = build({
+      fetchPageProps: async () => ({ pageProps: { video: { playbackId: 'pb', playbackToken: 'tok' } }, status: 200, finalUrl: 'https://u' }),
+      resolveQualities: async () => ({ qualities: [{ height: 720, videoUrl: 'https://x/v.m3u8' }] }),
+    });
+    const out = await b.resolveBulkLesson(lesson({ lessonUrl: 'https://www.skool.com/g/classroom/c?md=l1' }));
+    check('a native lesson resolves', out.kind, 'qualities');
+    const applied = headerRules.find(r => r.headers);
+    ok('the playlist fetch carries a Referer', !!applied?.headers?.Referer);
+    check('and it is the lesson page', applied.headers.Referer, 'https://www.skool.com/g/classroom/c?md=l1');
+    ok('the rule is removed once resolving is done', headerRules.some(r => r.removed));
+    // The rule covers resolution only; every segment fetch that follows is a
+    // separate request, and runJob re-applies from the quality itself.
+    ok('the headers ride onto the qualities for the download step',
+      out.qualities.every(q => q.headers && q.headers.Referer));
+  }
+
+  // A domain-restricted Vimeo embed needs the same treatment on its API host.
+  {
+    const b = build({ resolveQualities: async () => ({ qualities: [{ height: 1080 }] }) });
+    const out = await b.resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.VIMEO, sourceRef: 'https://vimeo.com/123456789',
+      lessonUrl: 'https://www.skool.com/g/classroom/c?md=l2' }));
+    check('a vimeo lesson resolves', out.kind, 'qualities');
+    const applied = headerRules.find(r => r.headers);
+    ok('the vimeo API fetch carries a Referer', !!applied?.headers?.Referer);
+    ok('scoped to the vimeo API host', /player\.vimeo\.com/.test(applied.url));
+    ok('and the rule is cleaned up', headerRules.some(r => r.removed));
+  }
 
   // The locked case. Everything on the page looks healthy; only the token is
   // missing — and it must NOT settle, or gaining access never brings it back.
