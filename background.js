@@ -2025,3 +2025,113 @@ async function scanCourse(group, courseSlug) {
 
   return { ...tree, group, courseSlug };
 }
+
+// Resolve one lesson to something downloadable, called immediately before the
+// download itself rather than in a preflight sweep — a lesson page is around
+// half a megabyte and a playback token expires in about a day.
+//
+// Embed platforms go through the existing resolvers, so a bulk download and a
+// single-lesson download of the same video cannot drift apart.
+//
+// → { kind: 'qualities', qualities, platform }
+//   { kind: 'link', url }        YouTube — handed off, not downloaded
+//   { kind: 'notes-only' }       a text lesson
+//   { kind: 'skip', reason, detail? }
+//
+// Every skip carries a reason that survives into the run tally, and `detail`
+// carries the one worked example the report shows for that reason. A skip whose
+// reason is 'unknown' settles permanently (SETTLED_SKIP_KINDS); every other
+// reason here stays retryable, because access, network and Skool's own schema
+// can all change between runs.
+async function resolveBulkLesson(lesson) {
+  switch (lesson.sourceKind) {
+    case SOURCE.NATIVE: {
+      const { pageProps, status, finalUrl } = await fetchPageProps(lesson.lessonUrl);
+      if (!pageProps) {
+        return { kind: 'skip', reason: 'schema-drift',
+          detail: `lesson page had no data (HTTP ${status} ${bulkPathOf(finalUrl)})` };
+      }
+      const play = nativePlaybackFrom(pageProps);
+      // §2.5: on a locked lesson playbackId, status:"ready" and duration are all
+      // still present and only the token is missing. Not settling means a later
+      // run retries it once the user gains access.
+      if (!play.ok) return { kind: 'skip', reason: 'locked' };
+
+      // Both hosts serve the same signed playlist; the fallback covers one of
+      // them going away. Neither needs a Referer.
+      //
+      // Resolving IS the probe: the plan fetched the master once to test it and
+      // then let the resolver fetch it again. On a 40-lesson course that is 40
+      // wasted round trips against a token that is already ticking.
+      let qualities = null, firstError = null;
+      for (const url of [play.masterUrl, play.fallbackUrl]) {
+        try {
+          const resolved = await resolveQualities({ platform: 'skool', url });
+          qualities = resolved?.qualities || [];
+          if (qualities.length) break;
+        } catch (e) {
+          firstError = firstError || e;
+          qualities = null;
+        }
+      }
+      if (!qualities || !qualities.length) {
+        return { kind: 'skip', reason: 'no-qualities',
+          detail: firstError ? `both playback hosts failed: ${String(firstError.message).slice(0, 90)}`
+                             : 'playlist listed no renditions' };
+      }
+      return { kind: 'qualities', qualities, platform: 'skool' };
+    }
+
+    case SOURCE.LOOM:
+    case SOURCE.VIMEO:
+    case SOURCE.WISTIA: {
+      if (!lesson.sourceRef) return { kind: 'skip', reason: 'missing-source' };
+      const sourceId = embedSourceId(lesson.sourceKind, lesson.sourceRef);
+      if (!sourceId) {
+        // The host was recognised but the id was not. That is a URL shape we
+        // have not seen, and the link itself is the only useful thing to report.
+        return { kind: 'skip', reason: 'missing-source',
+          detail: `no ${lesson.sourceKind} id in ${String(lesson.sourceRef).slice(0, 90)}` };
+      }
+      let resolved;
+      try {
+        resolved = await resolveQualities({
+          platform: lesson.sourceKind, sourceId, pageUrl: lesson.lessonUrl,
+        });
+      } catch (e) {
+        return { kind: 'skip', reason: 'no-qualities',
+          detail: `${lesson.sourceKind}: ${String(e.message).slice(0, 90)}` };
+      }
+      const qualities = resolved?.qualities || [];
+      if (!qualities.length) {
+        return { kind: 'skip', reason: 'no-qualities', detail: `${lesson.sourceKind} returned no renditions` };
+      }
+      return { kind: 'qualities', qualities, platform: lesson.sourceKind };
+    }
+
+    case SOURCE.YOUTUBE:
+      return lesson.sourceRef ? { kind: 'link', url: lesson.sourceRef } : { kind: 'skip', reason: 'missing-source' };
+
+    case SOURCE.TEXT:
+      return { kind: 'notes-only' };
+
+    default:
+      // An embed host the course tree could not name. Nothing can download it,
+      // so this is one of the few skips that settles for good.
+      return { kind: 'skip', reason: 'unknown',
+        detail: `unrecognised source ${String(lesson.sourceKind).slice(0, 40)}` };
+  }
+}
+
+// The embed resolvers take a platform id, not a URL, so pull the id back out of
+// the link the course tree gave us. Returning null rather than guessing is the
+// point: a wrong id resolves to someone else's video, which is far worse than a
+// named skip.
+function embedSourceId(platform, url) {
+  const s = String(url || '');
+  let m;
+  if (platform === SOURCE.LOOM) { m = /(?:share|embed)\/([0-9a-f]{20,})/i.exec(s); return m ? m[1] : null; }
+  if (platform === SOURCE.VIMEO) { m = /vimeo\.com\/(?:video\/)?(\d{6,})/i.exec(s); return m ? m[1] : null; }
+  if (platform === SOURCE.WISTIA) { m = /(?:medias|iframe)\/([A-Za-z0-9]{8,})/i.exec(s); return m ? m[1] : null; }
+  return null;
+}

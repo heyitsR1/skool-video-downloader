@@ -428,5 +428,133 @@ console.log('\ndownload settle hook:');
   ok('saveBlob returns the id it waited on', /if \(state !== 'complete'\)[^}]*\n\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*return downloadId;/.test(src));
 }
 
+// ── 8. Resolving one lesson's media ──────────────────────────────────────────
+// Every branch either produces something downloadable or a NAMED skip. A skip
+// with the wrong name is the expensive failure: 'unknown' settles permanently,
+// so a lesson misfiled under it is never retried, while a locked lesson filed
+// correctly comes back the moment the user gains access.
+console.log('\nlesson media resolution:');
+{
+  const { createRequire } = await import('node:module');
+  const bulk = createRequire(import.meta.url)(path.join(ROOT, 'bulk.js'));
+
+  const build = (deps = {}) => {
+    const code = extract('background.js', ['resolveBulkLesson', 'embedSourceId']);
+    return new Function('d', `
+      const { SOURCE, fetchPageProps, nativePlaybackFrom, resolveQualities, bulkPathOf } = d;
+      ${code}
+      return { resolveBulkLesson, embedSourceId };
+    `)({
+      SOURCE: bulk.SOURCE,
+      nativePlaybackFrom: bulk.nativePlaybackFrom,
+      bulkPathOf: u => { try { return new URL(u).pathname; } catch { return String(u); } },
+      fetchPageProps: async () => ({ pageProps: null, status: 500, finalUrl: 'https://x/y' }),
+      resolveQualities: async () => ({ qualities: [] }),
+      ...deps,
+    });
+  };
+  const lesson = (over = {}) => ({ sourceKind: bulk.SOURCE.NATIVE, sourceRef: 'v', lessonUrl: 'https://u', ...over });
+
+  // A text lesson and an unnamed host are different outcomes, and only one of
+  // them is allowed to settle forever.
+  check('a text lesson needs no media',
+    (await build().resolveBulkLesson(lesson({ sourceKind: bulk.SOURCE.TEXT }))).kind, 'notes-only');
+  const unknown = await build().resolveBulkLesson(lesson({ sourceKind: bulk.SOURCE.UNKNOWN }));
+  check('an unnamed host skips as unknown', { kind: unknown.kind, reason: unknown.reason },
+    { kind: 'skip', reason: 'unknown' });
+  ok('and unknown is the reason that settles for good', bulk.SETTLED_SKIP_KINDS.includes(unknown.reason));
+
+  // The locked case. Everything on the page looks healthy; only the token is
+  // missing — and it must NOT settle, or gaining access never brings it back.
+  {
+    const r = await build({
+      fetchPageProps: async () => ({ pageProps: { video: { playbackId: 'p', status: 'ready', duration: 1 } }, status: 200, finalUrl: 'https://u' }),
+    }).resolveBulkLesson(lesson());
+    check('a locked lesson skips as locked', { kind: r.kind, reason: r.reason }, { kind: 'skip', reason: 'locked' });
+    ok('and locked never settles', !bulk.SETTLED_SKIP_KINDS.includes(r.reason));
+  }
+
+  // Resolving is the probe. The plan fetched the master to test it and then let
+  // the resolver fetch it again — 40 wasted round trips on a 40-lesson course,
+  // against a token that is already expiring.
+  {
+    const tried = [];
+    const r = await build({
+      fetchPageProps: async () => ({ pageProps: { video: { playbackId: 'p', playbackToken: 't' } }, status: 200, finalUrl: 'https://u' }),
+      resolveQualities: async v => { tried.push(v.url); return { qualities: [{ height: 720 }] }; },
+    }).resolveBulkLesson(lesson());
+    check('a healthy native lesson resolves', { kind: r.kind, platform: r.platform }, { kind: 'qualities', platform: 'skool' });
+    check('the primary host is fetched exactly once', tried.length, 1);
+    ok('and it is the skool host', /stream\.video\.skool\.com/.test(tried[0]));
+  }
+
+  // The fallback host exists for one of the two going away.
+  {
+    const tried = [];
+    const r = await build({
+      fetchPageProps: async () => ({ pageProps: { video: { playbackId: 'p', playbackToken: 't' } }, status: 200, finalUrl: 'https://u' }),
+      resolveQualities: async v => {
+        tried.push(v.url);
+        if (tried.length === 1) throw new Error('Playlist fetch failed (403)');
+        return { qualities: [{ height: 1080 }] };
+      },
+    }).resolveBulkLesson(lesson());
+    check('a failed primary falls back to the other host', r.kind, 'qualities');
+    check('both hosts were tried, in order', tried.length, 2);
+    ok('fallback is the mux host', /stream\.mux\.com/.test(tried[1]));
+  }
+
+  {
+    const r = await build({
+      fetchPageProps: async () => ({ pageProps: { video: { playbackId: 'p', playbackToken: 't' } }, status: 200, finalUrl: 'https://u' }),
+      resolveQualities: async () => { throw new Error('Playlist fetch failed (403) — replay the video'); },
+    }).resolveBulkLesson(lesson());
+    check('both hosts failing is no-qualities', r.reason, 'no-qualities');
+    ok('and the detail carries the real error, not just a code', /403/.test(r.detail));
+    ok('and no-qualities stays retryable', !bulk.SETTLED_SKIP_KINDS.includes(r.reason));
+  }
+
+  {
+    const r = await build().resolveBulkLesson(lesson());
+    check('a lesson page with no data is drift, not locked', r.reason, 'schema-drift');
+    ok('and the detail carries the status', /HTTP 500/.test(r.detail));
+  }
+
+  // Embed platforms: an id we cannot parse must never be guessed. A wrong id
+  // resolves to someone else's video and downloads it silently.
+  const ids = build().embedSourceId;
+  check('loom id', ids(bulk.SOURCE.LOOM, 'https://www.loom.com/share/' + '0'.repeat(31) + '2'), '0'.repeat(31) + '2');
+  check('loom embed form', ids(bulk.SOURCE.LOOM, 'https://www.loom.com/embed/' + 'a'.repeat(24)), 'a'.repeat(24));
+  check('vimeo id', ids(bulk.SOURCE.VIMEO, 'https://vimeo.com/123456789'), '123456789');
+  check('vimeo /video/ form', ids(bulk.SOURCE.VIMEO, 'https://player.vimeo.com/video/987654321'), '987654321');
+  check('wistia id', ids(bulk.SOURCE.WISTIA, 'https://fast.wistia.net/embed/iframe/abc12345'), 'abc12345');
+  check('an unparseable loom link yields no id', ids(bulk.SOURCE.LOOM, 'https://www.loom.com/'), null);
+  check('a too-short vimeo id is not accepted', ids(bulk.SOURCE.VIMEO, 'https://vimeo.com/123'), null);
+  check('a null url never throws', ids(bulk.SOURCE.VIMEO, null), null);
+
+  {
+    const r = await build().resolveBulkLesson(lesson({ sourceKind: bulk.SOURCE.VIMEO, sourceRef: 'https://vimeo.com/nope' }));
+    check('an unparseable embed link is missing-source', r.reason, 'missing-source');
+    ok('and the detail quotes the link', /vimeo\.com\/nope/.test(r.detail));
+  }
+
+  {
+    const seen = [];
+    const r = await build({ resolveQualities: async v => { seen.push(v); return { qualities: [{ height: 720 }] }; } })
+      .resolveBulkLesson(lesson({ sourceKind: bulk.SOURCE.LOOM, sourceRef: 'https://www.loom.com/share/' + 'b'.repeat(32) }));
+    check('a loom lesson resolves through the shared resolver', r.kind, 'qualities');
+    check('and is handed an id, not a url', { platform: seen[0].platform, sourceId: seen[0].sourceId },
+      { platform: 'loom', sourceId: 'b'.repeat(32) });
+  }
+
+  {
+    const r = await build().resolveBulkLesson(lesson({ sourceKind: bulk.SOURCE.YOUTUBE, sourceRef: 'https://youtu.be/x' }));
+    check('youtube is handed off as a link, never downloaded', { kind: r.kind, url: r.url },
+      { kind: 'link', url: 'https://youtu.be/x' });
+  }
+  check('a youtube lesson with no link is missing-source',
+    (await build().resolveBulkLesson(lesson({ sourceKind: bulk.SOURCE.YOUTUBE, sourceRef: null }))).reason, 'missing-source');
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);
