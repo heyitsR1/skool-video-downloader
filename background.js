@@ -6,7 +6,7 @@
 // Next.js props. The popup resolves qualities on demand, then hands a download
 // job to the concurrent queue here, which fetches + remuxes to MP4 in-browser.
 
-importScripts('detectors.js', 'buildConfig.js');
+importScripts('bulk.js', 'detectors.js', 'buildConfig.js');
 
 const WORKER_URL = 'https://skool-dl-license.aarohan567.workers.dev';
 

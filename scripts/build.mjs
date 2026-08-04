@@ -23,7 +23,7 @@ const DIST = path.join(ROOT, 'dist');
 // Files/dirs that make up the shippable extension (everything else — docs,
 // scripts, dist, git, old zips — is deliberately excluded).
 const INCLUDE = [
-  'manifest.json', 'background.js', 'content.js', 'detectors.js', 'buildConfig.js',
+  'manifest.json', 'background.js', 'bulk.js', 'content.js', 'detectors.js', 'buildConfig.js',
   'popup.html', 'popup.css', 'popup.js', 'welcome.html', 'welcome.js', 'icons', 'lib', '_locales',
 ];
 
