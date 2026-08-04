@@ -1546,7 +1546,10 @@ function enqueueDownload({ quality, filename, tabId, platform, label, mode, onSe
 // escaping into the queue would take the whole course down with it.
 function enqueueDownloadAwaited(opts) {
   return new Promise((resolve) => {
-    enqueueDownload({ ...opts, onSettled: resolve });
+    const jobId = enqueueDownload({ ...opts, onSettled: resolve });
+    // The caller awaits the outcome, so it never sees the job id otherwise —
+    // and without it a cancel cannot reach the download that is in flight.
+    opts.onJobId?.(jobId);
   });
 }
 
@@ -1924,6 +1927,76 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
     case 'GET_VERSION_STATUS':
       getVersionStatus().then(sendResponse).catch(() => sendResponse(null));
+      return true;
+
+    case 'BULK_PREFLIGHT':
+      (async () => {
+        try {
+          const { group, courseSlug } = parseClassroomUrl(req.url);
+          if (!courseSlug) { sendResponse({ ok: false, code: 'not-a-course' }); return; }
+          const scan = await scanCourse(group, courseSlug);
+          const manifest = await loadManifest(group, courseSlug);
+          const merged = mergeManifest(manifest, scan.lessons);
+          const want = { video: true, notes: true, files: true };
+          const remaining = merged.filter(l =>
+            lessonNeedsWork(l.priorAssets, want, parseResources(l.resourcesRaw).files.map(f => f.fileId))).length;
+          sendResponse({ ok: true, group, courseSlug, courseTitle: scan.courseTitle,
+            shape: scan.shape, moduleCount: scan.moduleCount, total: scan.lessons.length,
+            alreadySaved: scan.lessons.length - remaining, remaining });
+        } catch (e) {
+          sendResponse({ ok: false, code: e instanceof BulkError ? e.code : 'network', message: e.message });
+        }
+      })();
+      return true;
+
+    case 'START_BULK':
+    case 'RESUME_BULK':
+      (async () => {
+        // Gated here as well as in the popup: a UI-only check is not a gate.
+        const { tier } = await getLicenseStatus();
+        if (tier !== 'lifetime' && tier !== 'monthly') { sendResponse({ ok: false, code: 'pro-required' }); return; }
+        // Two popups (or two windows) can each send a start. Without this the
+        // second orchestrator races the first over the same manifest and
+        // downloads every remaining lesson twice.
+        if (bulkRunActive) { sendResponse({ ok: false, code: 'already-running' }); return; }
+        sendResponse({ ok: true, started: true });
+        try {
+          // START and RESUME are the same call: the skip decision comes from the
+          // manifest, so resuming is running again. Both cases exist only so the
+          // popup can label the button honestly.
+          await runBulkCourse({
+            group: req.group, courseSlug: req.courseSlug,
+            want: req.want || { video: true, notes: true, files: true },
+          });
+        } catch (e) {
+          const code = e instanceof BulkError ? e.code : 'network';
+          await setBulkState({ phase: 'error', code, message: e.message });
+          bulkBroadcast({ type: 'BULK_DONE', error: code, message: e.message });
+        }
+      })();
+      return true;
+
+    case 'PAUSE_BULK':
+      bulkAbort.pause = true;
+      sendResponse({ ok: true });
+      return false;
+
+    case 'CANCEL_BULK':
+      bulkAbort.cancel = true;
+      // Cancelling stops the run but keeps the manifest — it means "stop", not
+      // "throw away what I already downloaded". The in-flight download is
+      // cancelled too: the loop only checks the abort flags between lessons, so
+      // without this a cancel would sit through the rest of a long video.
+      if (bulkCurrentJobId !== null) cancelJob(bulkCurrentJobId);
+      sendResponse({ ok: true });
+      return false;
+
+    case 'GET_BULK_STATE':
+      getBulkState().then(state => sendResponse({ ok: true, state }));
+      return true;
+
+    case 'CLEAR_MANIFEST':
+      clearManifest(req.group, req.courseSlug).then(() => sendResponse({ ok: true }));
       return true;
   }
   return true;
@@ -2375,6 +2448,9 @@ async function pruneDeletedAssets(group, courseSlug) {
 
 const BULK_STATE_KEY = 'bulk_run';
 let bulkAbort = { pause: false, cancel: false };
+// The queue job the run is currently waiting on, or null. A course run holds at
+// most one at a time, and CANCEL_BULK needs it to stop a download mid-file.
+let bulkCurrentJobId = null;
 
 async function getBulkState() {
   const got = await chrome.storage.session.get(BULK_STATE_KEY);
@@ -2429,6 +2505,9 @@ async function runBulkCourse({ group, courseSlug, want }) {
     throw e;
   } finally {
     bulkRunActive = false;
+    // A lesson that threw mid-download would otherwise leave a stale id here,
+    // and the next cancel would kill an unrelated download.
+    bulkCurrentJobId = null;
   }
 }
 
@@ -2614,7 +2693,9 @@ async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtu
         // of a failure deep inside ffmpeg. decrementCredit already no-ops for the
         // paid tiers this feature requires, so omitting it costs nothing.
         tabId: null, platform: resolved.platform, label: lesson.title,
+        onJobId: (id) => { bulkCurrentJobId = id; },
       });
+      bulkCurrentJobId = null;
       if (out.ok) {
         await recordAsset(group, courseSlug, lesson.lessonId, {
           status: 'saved', video: { path: `${base}.mp4`, downloadId: out.downloadId, savedAt: Date.now() },
