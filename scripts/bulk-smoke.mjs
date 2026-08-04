@@ -231,5 +231,166 @@ check('a missing label is named, not blank',
   ok('the suffix sits before the extension', b.endsWith('.pdf'));
 }
 
+console.log('\ndescToMarkdown');
+{
+  const doc = JSON.stringify([
+    { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Overview' }] },
+    { type: 'paragraph', content: [
+      { type: 'text', text: 'Read ' },
+      { type: 'text', marks: [{ type: 'bold' }], text: 'this' },
+      { type: 'text', text: ' and ' },
+      { type: 'text', marks: [{ type: 'italic' }], text: 'that' },
+      { type: 'text', text: '.' },
+    ] },
+    { type: 'bulletList', content: [
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'One' }] }] },
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Two' }] }] },
+    ] },
+  ]);
+
+  const md = bulk.descToMarkdown(`[v2]${doc}`);
+  ok('[v2] prefix is stripped', !md.includes('[v2]'));
+  ok('heading level respected', md.includes('## Overview'));
+  ok('bold', md.includes('**this**'));
+  ok('italic', md.includes('*that*'));
+  ok('bullets', md.includes('- One') && md.includes('- Two'));
+
+  check('an unprefixed document works too', bulk.descToMarkdown(doc).startsWith('## Overview'), true);
+
+  check('link mark', bulk.descToMarkdown(JSON.stringify([
+    { type: 'paragraph', content: [{ type: 'text', marks: [{ type: 'link', attrs: { href: 'https://example.com' } }], text: 'here' }] }
+  ])), '[here](https://example.com)');
+
+  check('inline code', bulk.descToMarkdown(JSON.stringify([
+    { type: 'paragraph', content: [{ type: 'text', marks: [{ type: 'code' }], text: 'npm run build' }] }
+  ])), '`npm run build`');
+
+  check('ordered list numbers from one', bulk.descToMarkdown(JSON.stringify([
+    { type: 'orderedList', content: [
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'First' }] }] },
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Second' }] }] },
+    ] }
+  ])), '1. First\n2. Second');
+
+  check('blockquote', bulk.descToMarkdown(JSON.stringify([
+    { type: 'blockquote', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Quoted' }] }] }
+  ])), '> Quoted');
+
+  check('code block', bulk.descToMarkdown(JSON.stringify([
+    { type: 'codeBlock', content: [{ type: 'text', text: 'let x = 1;' }] }
+  ])), '```\nlet x = 1;\n```');
+
+  check('hard break', bulk.descToMarkdown(JSON.stringify([
+    { type: 'paragraph', content: [{ type: 'text', text: 'a' }, { type: 'hardBreak' }, { type: 'text', text: 'b' }] }
+  ])), 'a\nb');
+
+  // An unknown wrapper must not delete the text inside it.
+  check('unknown node types keep their contents', bulk.descToMarkdown(JSON.stringify([
+    { type: 'someFutureBlock', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Survives' }] }] }
+  ])), 'Survives');
+
+  check('a single doc node, not an array', bulk.descToMarkdown(JSON.stringify(
+    { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Solo' }] }] }
+  )), 'Solo');
+
+  // Plain text that is not JSON is content, not an error.
+  check('non-JSON input is returned as-is', bulk.descToMarkdown('just a note'), 'just a note');
+  // …but the marker is an encoding detail, never part of what the user wrote.
+  check('a [v2] marker on unparseable text is still stripped',
+    bulk.descToMarkdown('[v2]just a note'), 'just a note');
+  check('null', bulk.descToMarkdown(null), '');
+  check('empty string', bulk.descToMarkdown(''), '');
+
+  // A nested list flattened onto its parent's line is unreadable, and the
+  // structure the author wrote is gone for good once the file is on disk.
+  check('a nested list keeps its nesting', bulk.descToMarkdown(JSON.stringify([
+    { type: 'bulletList', content: [
+      { type: 'listItem', content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Parent' }] },
+        { type: 'bulletList', content: [
+          { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Child' }] }] },
+        ] },
+      ] },
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Sibling' }] }] },
+    ] }
+  ])), '- Parent\n  - Child\n- Sibling');
+
+  check('an ordered list nested under a bullet', bulk.descToMarkdown(JSON.stringify([
+    { type: 'bulletList', content: [
+      { type: 'listItem', content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Steps' }] },
+        { type: 'orderedList', content: [
+          { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'a' }] }] },
+          { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'b' }] }] },
+        ] },
+      ] },
+    ] }
+  ])), '- Steps\n  1. a\n  2. b');
+
+  // A fence inside the code would end the block early and spill the rest of the
+  // lesson into the document as prose.
+  check('a code block containing a fence is fenced longer', bulk.descToMarkdown(JSON.stringify([
+    { type: 'codeBlock', content: [{ type: 'text', text: 'md:\n```\nx\n```' }] }
+  ])), '````\nmd:\n```\nx\n```\n````');
+
+  // Recursion is bounded, and says so rather than emitting empty notes — which
+  // would be indistinguishable from a lesson that genuinely had none.
+  const wrap = depth => {
+    let n = { type: 'paragraph', content: [{ type: 'text', text: 'deep' }] };
+    for (let i = 0; i < depth; i++) n = { type: 'someWrapper', content: [n] };
+    return JSON.stringify([n]);
+  };
+  check('a document nested past the cap says so', bulk.descToMarkdown(wrap(150)),
+    '[notes truncated: document nested too deeply]');
+  check('a document just under the cap is converted normally', bulk.descToMarkdown(wrap(90)), 'deep');
+  // Without the cap this is a stack overflow that costs the whole run, not one lesson.
+  let deepThrew = false;
+  try { bulk.descToMarkdown(wrap(50000)); } catch { deepThrew = true; }
+  ok('a pathologically deep document never throws', !deepThrew);
+
+  // Inline content recurses on its own path, so it needs its own bound.
+  let inlineThrew = false;
+  try {
+    let n = { type: 'text', text: 'x' };
+    for (let i = 0; i < 50000; i++) n = { type: 'someInlineWrapper', content: [n] };
+    bulk.descToMarkdown(JSON.stringify([{ type: 'paragraph', content: [n] }]));
+  } catch { inlineThrew = true; }
+  ok('pathologically deep inline content never throws', !inlineThrew);
+
+  // Indentation must follow list nesting, not recursion depth. A list inside any
+  // wrapper node is still a top-level list and must not be indented into one.
+  // Two items, because the final .trim() would hide a stray indent on line one.
+  check('a list inside a wrapper is not spuriously indented', bulk.descToMarkdown(JSON.stringify([
+    { type: 'someWrapper', content: [
+      { type: 'bulletList', content: [
+        { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Top' }] }] },
+        { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Next' }] }] },
+      ] },
+    ] },
+  ])), '- Top\n- Next');
+  check('an ordered list inside a wrapper is not indented either', bulk.descToMarkdown(JSON.stringify([
+    { type: 'someWrapper', content: [
+      { type: 'orderedList', content: [
+        { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Top' }] }] },
+        { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Next' }] }] },
+      ] },
+    ] },
+  ])), '1. Top\n2. Next');
+}
+
+console.log('\nnotesDocument');
+check('notes document leads with the lesson title', bulk.notesDocument({
+  title: 'Hooks', lessonUrl: 'https://www.skool.com/g/classroom/c?md=l', markdown: 'Body text', links: [],
+}), '# Hooks\n\nBody text\n\n---\nLesson: https://www.skool.com/g/classroom/c?md=l\n');
+check('resource links are appended', bulk.notesDocument({
+  title: 'Hooks', lessonUrl: 'https://u', markdown: 'Body', links: [{ label: 'Post', url: 'https://p' }],
+}), '# Hooks\n\nBody\n\n## Links\n\n- [Post](https://p)\n\n---\nLesson: https://u\n');
+check('a lesson with no notes still gets a document', bulk.notesDocument({
+  title: 'Hooks', lessonUrl: 'https://u', markdown: '', links: [],
+}), '# Hooks\n\n---\nLesson: https://u\n');
+check('a bracket in a link label does not break the link', bulk.notesDocument({
+  title: 'H', lessonUrl: 'https://u', markdown: '', links: [{ label: 'A [B] C', url: 'https://p' }],
+}), '# H\n\n## Links\n\n- [A \\[B\\] C](https://p)\n\n---\nLesson: https://u\n');
+
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : '✓ all assertions hold'}`);
 process.exit(failures ? 1 : 0);

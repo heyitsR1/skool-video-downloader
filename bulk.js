@@ -295,6 +295,121 @@ function attachmentFilename(base, file, usedNames) {
 }
 
 // ── Lesson notes ──────────────────────────────────────────────────────────────
+// metadata.desc holds a rich-text document as JSON, sometimes behind a "[v2]"
+// prefix. Unknown node types recurse into their contents rather than being
+// dropped: a future wrapper element must not silently delete the text inside it.
+
+// Depth is tracked separately from list indentation below: a wrapper element
+// nests the recursion without nesting the list, so one counter cannot do both —
+// and conflating them leaves the recursion unguarded.
+const MAX_NODE_DEPTH = 100;
+
+function pmInline(node, depth) {
+  const d = Number(depth) || 0;
+  if (!node || typeof node !== 'object' || d > MAX_NODE_DEPTH) return '';
+  if (node.type === 'text') {
+    let t = typeof node.text === 'string' ? node.text : '';
+    for (const mark of Array.isArray(node.marks) ? node.marks : []) {
+      if (!mark || typeof mark !== 'object') continue;
+      if (mark.type === 'bold') t = `**${t}**`;
+      else if (mark.type === 'italic') t = `*${t}*`;
+      else if (mark.type === 'code') t = '`' + t + '`';
+      else if (mark.type === 'link' && typeof mark.attrs?.href === 'string') t = `[${t}](${mark.attrs.href})`;
+    }
+    return t;
+  }
+  if (node.type === 'hardBreak') return '\n';
+  return (Array.isArray(node.content) ? node.content : []).map(k => pmInline(k, d + 1)).join('');
+}
+
+function isListNode(n) {
+  return n?.type === 'bulletList' || n?.type === 'orderedList';
+}
+
+// A list inside a list item becomes its own indented lines rather than being
+// folded onto the parent's. Flattening it would destroy the structure the author
+// wrote, and once the .md is on disk there is nothing left to recover it from.
+function pmListItems(kids, marker, listDepth, depth) {
+  const indent = '  '.repeat(listDepth);
+  return kids.map((li, i) => {
+    const parts = Array.isArray(li?.content) ? li.content : [];
+    const lead = parts.filter(p => !isListNode(p))
+      .map(p => pmBlock(p, listDepth, depth + 1)).join(' ').trim();
+    const sub = parts.filter(isListNode).map(p => pmBlock(p, listDepth + 1, depth + 1));
+    const line = `${indent}${marker(i)} ${lead}`.trimEnd();
+    return sub.length ? [line, ...sub].join('\n') : line;
+  }).join('\n');
+}
+
+// A fence inside the code would close the block early and spill the rest of the
+// lesson into the document as prose, so the fence grows past the longest run.
+function pmFence(body) {
+  const longest = (body.match(/`{3,}/g) || []).reduce((m, s) => Math.max(m, s.length), 0);
+  return '`'.repeat(Math.max(3, longest + 1));
+}
+
+// listDepth is how far the output is indented; depth is how far the recursion
+// has gone. A wrapper node advances the second without the first.
+function pmBlock(node, listDepth, depth) {
+  if (!node || typeof node !== 'object') return '';
+  const li = Number(listDepth) || 0;
+  const d = Number(depth) || 0;
+  // Deeper than any real document: a pathological one must not blow the worker's
+  // stack and cost the user the whole run. It says so in the file rather than
+  // returning '', because silently emitting empty notes is indistinguishable
+  // from a lesson that genuinely had none.
+  if (d > MAX_NODE_DEPTH) return '[notes truncated: document nested too deeply]';
+  const kids = Array.isArray(node.content) ? node.content : [];
+  const inline = () => kids.map(k => pmInline(k, d + 1)).join('');
+  switch (node.type) {
+    case 'heading': {
+      const level = Math.min(6, Math.max(1, Number(node.attrs?.level ?? 1) || 1));
+      return `${'#'.repeat(level)} ${inline()}`;
+    }
+    case 'paragraph':   return inline();
+    case 'bulletList':  return pmListItems(kids, () => '-', li, d);
+    case 'orderedList': return pmListItems(kids, i => `${i + 1}.`, li, d);
+    case 'blockquote':  return kids.map(k => pmBlock(k, li, d + 1)).join('\n').split('\n').map(l => `> ${l}`).join('\n');
+    case 'codeBlock': {
+      const body = inline();
+      return `${pmFence(body)}\n${body}\n${pmFence(body)}`;
+    }
+    case 'text':
+    case 'hardBreak':   return pmInline(node, d);
+    default:            return kids.map(k => pmBlock(k, li, d + 1)).join('\n\n');
+  }
+}
+
+function descToMarkdown(raw) {
+  if (typeof raw !== 'string' || raw === '') return '';
+  // The marker is an encoding detail. It is stripped before the parse attempt so
+  // that unparseable text falls back to what the user wrote, not to the marker.
+  const body = raw.startsWith('[v2]') ? raw.slice(4) : raw;
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { return body; }  // plain text is content, not a failure
+  let nodes = null;
+  if (Array.isArray(parsed)) nodes = parsed;
+  else if (parsed && typeof parsed === 'object') nodes = Array.isArray(parsed.content) ? parsed.content : [parsed];
+  if (!nodes) return body;
+  return nodes.map(n => pmBlock(n, 0, 0)).join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// The .md file written beside a lesson's video: its title, its notes, any
+// resource links that are not downloadable files, and a pointer back to the
+// lesson so the user can always find the original.
+function notesDocument({ title, lessonUrl, markdown, links }) {
+  const out = [`# ${title}`, ''];
+  if (markdown) out.push(markdown, '');
+  if (Array.isArray(links) && links.length) {
+    out.push('## Links', '');
+    // A bracket in a label would otherwise end the link text early and leave the
+    // rest of it, plus the URL, as loose characters in the file.
+    for (const l of links) out.push(`- [${String(l.label).replace(/([[\]])/g, '\\$1')}](${l.url})`);
+    out.push('');
+  }
+  out.push('---', `Lesson: ${lessonUrl}`, '');
+  return out.join('\n');
+}
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 
@@ -309,5 +424,6 @@ if (typeof module !== 'undefined' && module.exports) {
     parseClassroomUrl, lessonUrlFor, courseUrlFor,
     courseTitleFrom, classifyEmbedHost, courseTreeFromPageProps,
     sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
+    descToMarkdown, notesDocument,
   };
 }
