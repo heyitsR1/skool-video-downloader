@@ -2753,6 +2753,9 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
     await saveTextFile(`${course}/_download-log.txt`, runLogDocument({
       courseTitle: scan.courseTitle, group, courseSlug,
       version: chrome.runtime.getManifest().version,
+      // Which browser build produced this: merge failures and save failures are
+      // both version- and platform-specific, and the report cannot carry it.
+      userAgent: (typeof navigator !== 'undefined' && navigator.userAgent) || 'unknown',
       startedAt: runStartedAt, finishedAt: Date.now(), want,
       lessons: merged, manifest: await loadManifest(group, courseSlug),
       summary, reasons: tallied, examples, cancelled,

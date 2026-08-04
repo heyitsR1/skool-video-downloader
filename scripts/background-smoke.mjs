@@ -1096,6 +1096,9 @@ console.log('\norchestrator:');
     // The whole point: a lesson that wrote no file is the one the user asks
     // about, so it must be in the log rather than absent from it.
     ok('a lesson that produced nothing still appears', log.text.includes('Produces nothing'));
+    // A failure is only reproducible by hand if the log says where the media was.
+    ok('every lesson records the URL it came from', log.text.includes('lesson https://u/1'));
+    ok('and the browser build that produced the run', /Browser:\s+\S/.test(log.text));
     ok('and is not silently marked saved', /Produces nothing[\s\S]{0,200}notes  not attempted/.test(log.text));
   }
 

@@ -541,7 +541,7 @@ function assetLine(label, slot) {
   return `${label.padEnd(6)} not attempted`;
 }
 
-function runLogDocument({ courseTitle, group, courseSlug, version, startedAt, finishedAt,
+function runLogDocument({ courseTitle, group, courseSlug, version, userAgent, startedAt, finishedAt,
                           want, lessons, manifest, summary, reasons, examples, cancelled }) {
   const iso = (t) => { try { return new Date(t).toISOString(); } catch { return String(t); } };
   const records = (manifest && typeof manifest === 'object' && manifest.lessons) || {};
@@ -550,6 +550,7 @@ function runLogDocument({ courseTitle, group, courseSlug, version, startedAt, fi
     '',
     `Course:     ${courseTitle} (${group}/${courseSlug})`,
     `Extension:  v${version || 'unknown'}`,
+    `Browser:    ${String(userAgent || 'unknown').slice(0, 120)}`,
     `Started:    ${iso(startedAt)}`,
     `Finished:   ${iso(finishedAt)}${cancelled ? '  (cancelled)' : ''}`,
     `Requested:  ${describeWant(want)}`,
@@ -567,6 +568,10 @@ function runLogDocument({ courseTitle, group, courseSlug, version, startedAt, fi
     out.push(`${l.moduleTitle ? `${l.moduleTitle} / ` : ''}${l.title}`);
     out.push(`  id ${l.lessonId}  source=${l.sourceKind}${rec.status ? `  status=${rec.status}` : ''}`
       + `${rec.reason ? ` (${rec.reason})` : ''}`);
+    // The source link and the lesson URL are what make a failure reproducible
+    // by hand; without them a report says a lesson failed and nothing more.
+    out.push(`  lesson ${l.lessonUrl || '(unknown)'}`);
+    if (l.sourceRef) out.push(`  source ${String(l.sourceRef).slice(0, 120)}`);
     out.push(`  ${assetLine('video', a.video)}`);
     out.push(`  ${assetLine('notes', a.notes)}`);
     const files = Object.entries(a.files || {});

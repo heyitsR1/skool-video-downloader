@@ -57,6 +57,10 @@ function applyI18n() {
     const msg = chrome.i18n.getMessage(el.dataset.i18nPlaceholder);
     if (msg) el.placeholder = msg;
   });
+  document.querySelectorAll('[data-i18n-title]').forEach((el) => {
+    const msg = chrome.i18n.getMessage(el.dataset.i18nTitle);
+    if (msg) el.title = msg;
+  });
   document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
     const msg = chrome.i18n.getMessage(el.dataset.i18nAriaLabel);
     if (msg) el.setAttribute('aria-label', msg);
@@ -687,7 +691,11 @@ function initReportModal() {
   const modal = document.getElementById('report-modal');
   modal.querySelectorAll('[data-close-report]').forEach((el) =>
     el.addEventListener('click', () => modal.classList.add('hidden')));
-  document.getElementById('footer-report').addEventListener('click', () => openReportModal());
+  // Two entry points, one modal: the header chip is the visible one, the footer
+  // link stays for anyone who already knows where it was.
+  for (const id of ['footer-report', 'header-report']) {
+    document.getElementById(id).addEventListener('click', () => openReportModal());
+  }
 
   document.getElementById('report-send').addEventListener('click', async () => {
     const sendBtn = document.getElementById('report-send');

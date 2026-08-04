@@ -311,7 +311,7 @@
     "message": "e.g. The Loom video on this lesson never finishes downloading"
   },
   "reportEmailLabel": {
-    "message": "Email for a follow-up"
+    "message": "Your email"
   },
   "reportEmailPlaceholder": {
     "message": "you@example.com"
@@ -588,5 +588,11 @@
   },
   "bulkBeta": {
     "message": "Beta"
+  },
+  "reportChip": {
+    "message": "Report"
+  },
+  "reportEmailWhy": {
+    "message": "So we can tell you once it's fixed. Nothing else is ever sent here."
   }
 }

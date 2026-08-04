@@ -14,6 +14,12 @@
         <span class="logo__text">Skool Video Downloader</span>
       </span>
       <span id="tier-badge" class="badge badge--free" data-i18n="badgeFree">Free</span>
+      <!-- Top right, not buried in the footer. When a download fails the report
+           is the only thing that tells us why, and a link nobody sees is a
+           failure nobody hears about. -->
+      <button id="header-report" class="report-chip" data-i18n-title="footerReport" title="Report a problem">
+        <span aria-hidden="true">🚩</span> <span data-i18n="reportChip">Report</span>
+      </button>
     </div>
 
     <!-- Update banner (hidden unless this channel is behind; dismiss per version) -->
@@ -186,8 +192,9 @@
         <textarea id="report-note" class="input input--area" maxlength="300" data-i18n-placeholder="reportNotePlaceholder" placeholder="e.g. The Loom video on this lesson never finishes downloading"></textarea>
       </div>
       <div class="section">
-        <label class="label" for="report-email"><span data-i18n="reportEmailLabel">Email for a follow-up</span> <span class="label--muted" data-i18n="reportOptional">(optional)</span></label>
+        <label class="label" for="report-email"><span data-i18n="reportEmailLabel">Your email</span> <span class="label--muted" data-i18n="reportOptional">(optional)</span></label>
         <input type="email" id="report-email" class="input" data-i18n-placeholder="reportEmailPlaceholder" placeholder="you@example.com">
+        <p class="report-why" data-i18n="reportEmailWhy">So we can tell you once it's fixed. Nothing else is ever sent here.</p>
       </div>
       <button id="report-send" class="btn btn--outline" data-i18n="reportSendBtn">Send report</button>
       <div id="report-msg" class="msg"></div>
