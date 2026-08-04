@@ -1012,5 +1012,71 @@ console.log('\norchestrator:');
   check('an unlabelled height does not beat a real one', build().pickBestQuality([{ height: 720 }, {}]).height, 720);
 }
 
+// ── 12. Bulk orchestrator invariants ─────────────────────────────────────────
+// Source-level pins for the four orchestrator behaviours that fail silently:
+// nothing throws when a pause is late, a cancel discards a manifest, progress is
+// stored where a restart wipes it, or a missing record is read as a deleted file.
+console.log('\nbulk orchestrator invariants');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
+  // The body of one switch case: up to the next `case '` at the same level. The
+  // whole file would make "this case does not do X" pass for the wrong reason.
+  const caseBody = (name) => {
+    const from = src.indexOf(`case '${name}':`);
+    if (from === -1) return '';
+    let rest = src.slice(from + name.length + 8);
+    // Skip the labels a case falls through from — START_BULK and RESUME_BULK
+    // share one body, so stopping at the next `case '` would find nothing.
+    let m;
+    while ((m = /^\s*case '[A-Z_]+':/.exec(rest))) rest = rest.slice(m[0].length);
+    const to = rest.search(/\n {4}(case '|\})/);
+    return to === -1 ? rest : rest.slice(0, to);
+  };
+
+  // Serial only: the offscreen merge engine holds one instance, and a course run
+  // is background work where predictability beats speed.
+  ok('bulk downloads are awaited one at a time', /await enqueueDownloadAwaited\(/.test(src));
+
+  // A pause that is only checked at the top of the loop would run to the end of a
+  // 183-lesson course before taking effect.
+  ok('pause is checked in the lesson loop', /if \(bulkAbort\.pause\)/.test(src));
+  ok('pause is checked inside a lesson too', /bulkAbort\.pause \|\| bulkAbort\.cancel/.test(src));
+
+  // One bad lesson must not abort the course.
+  const loop = src.slice(src.indexOf('for (const lesson of merged)'));
+  ok('each lesson runs inside its own try', /try \{[\s\S]{0,400}runBulkLesson/.test(loop));
+
+  // Cancelling means stop, not discard.
+  ok('cancel does not clear the manifest', !/clearManifest/.test(caseBody('CANCEL_BULK')));
+  // …and it does reach the download already in flight: the lesson loop only
+  // checks the flags between lessons, so without this a cancel waits out the
+  // rest of a long video.
+  ok('cancel stops the download in flight', /cancelJob\(bulkCurrentJobId\)/.test(caseBody('CANCEL_BULK')));
+
+  // A UI-only Pro check is not a gate.
+  ok('starting a run is gated on the tier here',
+    /tier !== 'lifetime' && tier !== 'monthly'/.test(caseBody('START_BULK')));
+  // Two popups can each press start; a second orchestrator over the same
+  // manifest downloads every remaining lesson twice.
+  ok('a second concurrent run is refused', /if \(bulkRunActive\)/.test(caseBody('START_BULK')));
+
+  // The record of finished work must outlive the browser.
+  ok('the manifest lives in storage.local', /chrome\.storage\.local\.(get|set)\(/.test(src) && /manifestKey\(/.test(src));
+  ok('live progress lives in storage.session', /chrome\.storage\.session\.(get|set)\([^)]*BULK_STATE_KEY/.test(src));
+
+  // No record must never be read as "file deleted".
+  const prune = src.slice(src.indexOf('async function pruneDeletedAssets'));
+  ok('a cleared download history is not a deletion', /if \(!items\.length\) \{ unknown\+\+; continue; \}/.test(prune));
+  ok('only an explicit exists:false counts as deleted', /items\[0\]\.exists === false\) missing\.add/.test(prune));
+  ok('a failed lookup is not a deletion', /catch \{ failed\+\+; continue; \}/.test(prune));
+
+  // A run marked active with nothing behind it must not show a live progress bar.
+  // The call, not the declaration: a helper nothing invokes reconciles nothing.
+  ok('an interrupted run is reconciled on startup', /^reconcileBulkStateOnStartup\(\);$/m.test(src));
+
+  // Access is decided on the playback token, never on a hasAccess flag.
+  ok('access is not decided from hasAccess', !/hasAccess/.test(src));
+}
+
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');
 process.exit(failures ? 1 : 0);
