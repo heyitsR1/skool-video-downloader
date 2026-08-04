@@ -41,6 +41,53 @@
     <!-- Detected videos -->
     <div id="videos" class="videos hidden"></div>
 
+    <!-- Whole-course backup. Shown only on a classroom course page; the panel is
+         a view over background state, so closing the popup never stops a run. -->
+    <section id="bulk" class="bulk hidden">
+      <div id="bulk-idle" class="hidden">
+        <div class="bulk__course" id="bulk-course-title"></div>
+        <div class="bulk__meta" id="bulk-course-meta"></div>
+        <p class="bulk__note" data-i18n="bulkLockedNote">Lessons your account cannot open yet are skipped, and listed when the run finishes.</p>
+        <label class="bulk__opt"><input type="checkbox" id="bulk-want-video" checked> <span data-i18n="bulkWantVideo">Videos</span></label>
+        <label class="bulk__opt"><input type="checkbox" id="bulk-want-notes" checked> <span data-i18n="bulkWantNotes">Lesson notes</span></label>
+        <label class="bulk__opt"><input type="checkbox" id="bulk-want-files" checked> <span data-i18n="bulkWantFiles">Attachments</span></label>
+        <button id="bulk-start" class="btn btn--primary" data-i18n="bulkDownloadCourse">Download entire course</button>
+        <p class="bulk__pro hidden" id="bulk-pro-note" data-i18n="bulkProNote">Full-course backup is a Pro feature.</p>
+      </div>
+
+      <div id="bulk-resume" class="hidden">
+        <div class="bulk__course" id="bulk-resume-title"></div>
+        <div class="bulk__meta" id="bulk-resume-meta"></div>
+        <button id="bulk-resume-go" class="btn btn--primary" data-i18n="bulkResumeGo">Resume course download</button>
+        <button id="bulk-restart" class="btn btn--soft" data-i18n="bulkRestart">Re-download everything</button>
+      </div>
+
+      <div id="bulk-running" class="hidden">
+        <div class="bulk__course" id="bulk-run-title"></div>
+        <div class="bulk__bar"><div class="bulk__bar-fill" id="bulk-bar-fill"></div></div>
+        <div class="bulk__meta"><span id="bulk-count"></span> <span id="bulk-current"></span></div>
+        <div class="bulk__line" id="bulk-line"></div>
+        <div class="btn-row">
+          <button id="bulk-pause" class="btn btn--soft" data-i18n="bulkPause">Pause</button>
+          <button id="bulk-cancel" class="btn btn--soft" data-i18n="bulkCancel">Cancel</button>
+        </div>
+      </div>
+
+      <div id="bulk-paused" class="hidden">
+        <div class="bulk__course" id="bulk-paused-title"></div>
+        <div class="bulk__meta" id="bulk-paused-meta"></div>
+        <p class="bulk__note" data-i18n="bulkPausedNote">Your progress is saved. You can close this popup or restart your browser.</p>
+        <button id="bulk-unpause" class="btn btn--primary" data-i18n="bulkResumeRun">Resume</button>
+        <button id="bulk-cancel-2" class="btn btn--soft" data-i18n="bulkCancel">Cancel</button>
+      </div>
+
+      <div id="bulk-done" class="hidden">
+        <div class="bulk__meta" id="bulk-summary"></div>
+        <ul class="bulk__detail" id="bulk-detail"></ul>
+        <button id="bulk-again" class="btn btn--soft" data-i18n="bulkAgain">Back</button>
+      </div>
+    </section>
+
     <!-- Quality picker (opened for a chosen video) -->
     <div id="quality-view" class="quality-view hidden">
       <button id="quality-back" class="link-back" data-i18n="qualityBack">← Back to videos</button>

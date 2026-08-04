@@ -69,6 +69,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupPricingModal();
   setupLicenseActivation();
   setupQueueListener();
+  setupBulkPanel();
 
   document.getElementById('quality-back').addEventListener('click', showVideoList);
   document.getElementById('upgrade-btn').addEventListener('click', () => openPricingModal());
@@ -81,9 +82,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  await initLicenseUI();
+  const license = await initLicenseUI();
   await refreshVideos();
   await refreshQueue();
+  // Last, and not awaited: preflight is a network round trip to Skool, and the
+  // one-lesson flow above must not wait on the whole-course one.
+  initBulkPanel(activeTab?.url, license?.tier === 'lifetime' || license?.tier === 'monthly');
   initUpdateBanner(); // async, non-blocking — banner pops in if an update exists
 
   // Nudge the content script to rescan (covers already-open lessons).
@@ -98,9 +102,11 @@ function t(key, fallback) {
 }
 
 // ── License UI ──────────────────────────────────────────────────────────────
+// Returns the licence status so callers that need the tier (the course-backup
+// panel) do not have to ask for it a second time.
 async function initLicenseUI() {
   const status = await send({ type: 'GET_LICENSE_STATUS' });
-  if (!status) return;
+  if (!status) return null;
   const badge = document.getElementById('tier-badge');
   const creditsText = document.getElementById('credits-text');
   const lifetimeLink = document.getElementById('lifetime-link');
@@ -134,6 +140,7 @@ async function initLicenseUI() {
     upgradeBtn.classList.remove('hidden');
     licenseSection.classList.remove('hidden');
   }
+  return status;
 }
 
 // ── Video detection list ──────────────────────────────────────────────────────
@@ -726,5 +733,189 @@ function send(message) {
   return new Promise((resolve) => {
     try { chrome.runtime.sendMessage(message, (r) => resolve(chrome.runtime.lastError ? null : r)); }
     catch { resolve(null); }
+  });
+}
+
+// ── Whole-course backup ───────────────────────────────────────────────────────
+// The popup is a view over background state: it renders from GET_BULK_STATE when
+// it opens and from BULK_STATE pushes while it is open. Closing it, or closing
+// the browser, never affects a run.
+
+const BULK_PANES = ['bulk-idle', 'bulk-resume', 'bulk-running', 'bulk-paused', 'bulk-done'];
+const bulkEl = (id) => document.getElementById(id);
+const bulkT = (key, ...subs) => chrome.i18n.getMessage(key, subs.map(String));
+let bulkCtx = null;      // preflight result: { group, courseSlug, courseTitle, total, … }
+let bulkRestartArmed = false;
+
+function bulkShow(which) {
+  for (const pane of BULK_PANES) bulkEl(pane).classList.toggle('hidden', pane !== which);
+  bulkEl('bulk').classList.remove('hidden');
+  bulkDisarmRestart();
+}
+
+function bulkWant() {
+  return {
+    video: bulkEl('bulk-want-video').checked,
+    notes: bulkEl('bulk-want-notes').checked,
+    files: bulkEl('bulk-want-files').checked,
+  };
+}
+
+async function initBulkPanel(tabUrl, isPro) {
+  if (!tabUrl?.includes('/classroom')) return;
+
+  // A live or interrupted run wins over preflight, so reopening mid-run shows the
+  // run rather than an invitation to start a second one.
+  const live = await send({ type: 'GET_BULK_STATE' });
+  const state = live?.state || null;
+  if (state?.phase === 'running') { bulkCtx = state; bulkRenderRunning(state); return; }
+  if (state?.phase === 'paused') { bulkCtx = state; bulkRenderPaused(state); return; }
+
+  const pre = await send({ type: 'BULK_PREFLIGHT', url: tabUrl });
+  if (!pre) return;
+  if (!pre.ok) {
+    // Not a course page at all — no panel, no explanation needed.
+    if (pre.code === 'not-a-course') return;
+    bulkShow('bulk-idle');
+    bulkEl('bulk-course-title').textContent = '';
+    bulkEl('bulk-course-meta').textContent = bulkT({
+      'not-signed-in': 'bulkErrNotSignedIn', 'schema-drift': 'bulkErrSchemaDrift',
+      'empty-course': 'bulkErrEmptyCourse', 'no-access': 'bulkErrNoAccess',
+      'rate-limited': 'bulkErrRateLimited',
+    }[pre.code] || 'bulkErrSchemaDrift');
+    bulkEl('bulk-start').classList.add('hidden');
+    for (const el of document.querySelectorAll('#bulk-idle .bulk__opt, #bulk-idle .bulk__note')) {
+      el.classList.add('hidden');
+    }
+    return;
+  }
+
+  bulkCtx = pre;
+  const meta = [bulkT('bulkLessonCount', pre.total)];
+  if (pre.shape !== 'flat') meta.push(bulkT('bulkModuleCount', pre.moduleCount));
+  bulkEl('bulk-course-title').textContent = pre.courseTitle;
+  bulkEl('bulk-course-meta').textContent = meta.join(' · ');
+  bulkEl('bulk-pro-note').classList.toggle('hidden', !!isPro);
+
+  // A run that ended while the popup was closed has no other way to report
+  // itself: the BULK_DONE broadcast went nowhere. Only for this course, so a
+  // different course's result never shows up here.
+  if ((state?.phase === 'completed' || state?.phase === 'cancelled')
+      && state.group === pre.group && state.courseSlug === pre.courseSlug) {
+    bulkRenderDone({ summary: state.summary, cancelled: state.phase === 'cancelled' });
+    return;
+  }
+
+  // Interrupted, or a previous run left work outstanding: lead with what is
+  // already done — "Resume" without a number reads like "start over".
+  if (state?.phase === 'interrupted' && state.group === pre.group && state.courseSlug === pre.courseSlug) {
+    bulkRenderResume(pre.alreadySaved, pre.total);
+  } else if (pre.alreadySaved > 0 && pre.remaining > 0) {
+    bulkRenderResume(pre.alreadySaved, pre.total);
+  } else {
+    bulkShow('bulk-idle');
+  }
+}
+
+function bulkRenderResume(saved, total) {
+  bulkEl('bulk-resume-title').textContent = bulkCtx?.courseTitle || bulkT('bulkResumeTitle');
+  bulkEl('bulk-resume-meta').textContent = bulkT('bulkResumeMeta', saved, total);
+  bulkShow('bulk-resume');
+}
+
+function bulkRenderRunning(state) {
+  const done = state.done || 0, total = state.total || 0;
+  bulkEl('bulk-run-title').textContent = state.courseTitle || bulkCtx?.courseTitle || '';
+  bulkEl('bulk-bar-fill').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+  bulkEl('bulk-count').textContent = bulkT('bulkProgress', done, total);
+  bulkEl('bulk-current').textContent = state.currentTitle || '';
+  bulkEl('bulk-line').textContent = state.lastLine || '';
+  bulkShow('bulk-running');
+}
+
+function bulkRenderPaused(state) {
+  bulkEl('bulk-paused-title').textContent = state.courseTitle || bulkCtx?.courseTitle || '';
+  bulkEl('bulk-paused-meta').textContent = bulkT('bulkPausedMeta', state.done || 0, state.total || 0);
+  bulkShow('bulk-paused');
+}
+
+function bulkRenderDone(msg) {
+  const list = bulkEl('bulk-detail');
+  // A run that died before its first lesson has no counts. Showing the zeroed
+  // summary would read as "nothing to do" instead of "this failed".
+  if (msg.error) {
+    bulkEl('bulk-summary').textContent = bulkT({
+      'not-signed-in': 'bulkErrNotSignedIn', 'schema-drift': 'bulkErrSchemaDrift',
+      'empty-course': 'bulkErrEmptyCourse', 'no-access': 'bulkErrNoAccess',
+      'rate-limited': 'bulkErrRateLimited',
+    }[msg.error] || 'bulkErrSchemaDrift');
+    list.textContent = '';
+    bulkShow('bulk-done');
+    return;
+  }
+  const s = msg.summary || { saved: 0, skipped: 0, failed: 0 };
+  bulkEl('bulk-summary').textContent = bulkT('bulkSummary', s.saved, s.skipped, s.failed)
+    + (msg.cancelled ? ` · ${bulkT('bulkCancelled')}` : '');
+  list.textContent = '';
+  const add = (text) => { const li = document.createElement('li'); li.textContent = text; list.appendChild(li); };
+  if (s.skippedByReason?.locked) add(bulkT('bulkSkipLocked', s.skippedByReason.locked));
+  if (s.skippedByReason?.youtube) add(bulkT('bulkSkipYoutube', s.skippedByReason.youtube));
+  for (const f of msg.failedDetail || []) add(`${f.title} — ${f.reason}`);
+  bulkShow('bulk-done');
+}
+
+async function bulkStart(type) {
+  if (!bulkCtx) return;
+  const res = await send({
+    type, group: bulkCtx.group, courseSlug: bulkCtx.courseSlug, want: bulkWant(),
+  });
+  // The tier check lives in the background as well as here; this is the free
+  // user's first sight of the paywall, so it opens the plans rather than an error.
+  if (res?.code === 'pro-required') { openPricingModal(); return; }
+  // Another popup already started this run — show the run, not a second start.
+  if (res?.code === 'already-running') {
+    const live = await send({ type: 'GET_BULK_STATE' });
+    if (live?.state) bulkRenderRunning(live.state);
+    return;
+  }
+  if (!res?.ok) return;
+  bulkRenderRunning({ done: 0, total: bulkCtx.total, currentTitle: '', lastLine: '' });
+}
+
+// Two-step rather than confirm(): a modal dialog can close the popup out from
+// under the run, and this discards a record of work already on disk.
+function bulkDisarmRestart() {
+  if (!bulkRestartArmed) return;
+  bulkRestartArmed = false;
+  bulkEl('bulk-restart').textContent = bulkT('bulkRestart');
+}
+
+function setupBulkPanel() {
+  bulkEl('bulk-start').addEventListener('click', () => bulkStart('START_BULK'));
+  bulkEl('bulk-resume-go').addEventListener('click', () => bulkStart('RESUME_BULK'));
+  bulkEl('bulk-unpause').addEventListener('click', () => bulkStart('RESUME_BULK'));
+  bulkEl('bulk-pause').addEventListener('click', () => send({ type: 'PAUSE_BULK' }));
+  bulkEl('bulk-again').addEventListener('click', () => bulkShow('bulk-idle'));
+  for (const id of ['bulk-cancel', 'bulk-cancel-2']) {
+    bulkEl(id).addEventListener('click', () => send({ type: 'CANCEL_BULK' }));
+  }
+  bulkEl('bulk-restart').addEventListener('click', async () => {
+    if (!bulkCtx) return;
+    if (!bulkRestartArmed) {
+      bulkRestartArmed = true;
+      bulkEl('bulk-restart').textContent = bulkT('bulkRestartConfirm');
+      return;
+    }
+    await send({ type: 'CLEAR_MANIFEST', group: bulkCtx.group, courseSlug: bulkCtx.courseSlug });
+    bulkShow('bulk-idle');
+  });
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === 'BULK_STATE') {
+      if (msg.state.phase === 'running') bulkRenderRunning(msg.state);
+      else if (msg.state.phase === 'paused') bulkRenderPaused(msg.state);
+    } else if (msg?.type === 'BULK_DONE') {
+      bulkRenderDone(msg);
+    }
   });
 }
