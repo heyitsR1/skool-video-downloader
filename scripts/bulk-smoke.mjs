@@ -67,6 +67,79 @@ ok('lessonUrlFor throws on a missing id, rather than building ?md=undefined', th
 check('courseUrlFor',
   bulk.courseUrlFor('g1', 'abc123'),
   'https://www.skool.com/g1/classroom/abc123');
+threw = false;
+try { bulk.courseUrlFor('g1', undefined); } catch { threw = true; }
+ok('courseUrlFor throws on a missing slug, rather than building /classroom/undefined', threw);
+
+const { KIND, SOURCE } = bulk;
+
+console.log('\ncourseTreeFromPageProps');
+{
+  const flat = bulk.courseTreeFromPageProps(fixture('course-flat'), 'g1', 'slug1');
+  check('flat: ok', flat.ok, true);
+  check('flat: title from the wrapped course node', flat.courseTitle, 'Flat Course');
+  check('flat: shape', flat.shape, 'flat');
+  check('flat: no modules invented', flat.moduleCount, 0);
+  check('flat: lesson count', flat.lessons.length, 3);
+  check('flat: lessons sit at the course root', flat.lessons.map(l => l.moduleIdx), [null, null, null]);
+  check('flat: source kinds', flat.lessons.map(l => l.sourceKind),
+    [SOURCE.NATIVE, SOURCE.LOOM, SOURCE.TEXT]);
+  check('flat: lesson indices are 1-based and sequential', flat.lessons.map(l => l.lessonIdx), [1, 2, 3]);
+  check('flat: native ref is the videoId', flat.lessons[0].sourceRef, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1');
+  check('flat: a text lesson has no ref to resolve', flat.lessons[2].sourceRef, null);
+  check('flat: duration carried', flat.lessons[0].durationMs, 60000);
+  check('flat: a missing duration is null, not 0', flat.lessons[1].durationMs, null);
+  check('flat: lesson URL built', flat.lessons[0].lessonUrl,
+    'https://www.skool.com/g1/classroom/slug1?md=l1');
+
+  const nested = bulk.courseTreeFromPageProps(fixture('course-nested'), 'g1', 'slug2');
+  check('nested: shape', nested.shape, 'nested');
+  check('nested: module count', nested.moduleCount, 2);
+  check('nested: lesson count', nested.lessons.length, 3);
+  check('nested: module indices', nested.lessons.map(l => l.moduleIdx), [1, 1, 2]);
+  check('nested: module titles', nested.lessons.map(l => l.moduleTitle), ['Module One', 'Module One', 'Module Two']);
+  check('nested: lesson index restarts per module', nested.lessons.map(l => l.lessonIdx), [1, 2, 1]);
+  check('nested: vimeo classified', nested.lessons[2].sourceKind, SOURCE.VIMEO);
+  check('nested: modules are not themselves lessons', nested.lessons.map(l => l.lessonId), ['l1', 'l2', 'l3']);
+
+  const mixed = bulk.courseTreeFromPageProps(fixture('course-mixed'), 'g1', 'slug3');
+  check('mixed: shape', mixed.shape, 'mixed');
+  check('mixed: one module', mixed.moduleCount, 1);
+  check('mixed: lesson count', mixed.lessons.length, 3);
+  check('mixed: loose lesson goes to the course root', mixed.lessons[0].moduleIdx, null);
+  check('mixed: module lessons keep their folder', mixed.lessons.slice(1).map(l => l.moduleIdx), [1, 1]);
+
+  // §6.2 — these two must never be reported the same way.
+  const empty = bulk.courseTreeFromPageProps(fixture('course-empty'), 'g1', 'slug4');
+  check('empty course is named as such', { ok: empty.ok, code: empty.code }, { ok: false, code: 'empty-course' });
+  const drift = bulk.courseTreeFromPageProps(fixture('course-drift'), 'g1', 'slug5');
+  check('reshaped children are drift, not emptiness', { ok: drift.ok, code: drift.code }, { ok: false, code: 'schema-drift' });
+  ok('empty and drift differ', empty.code !== drift.code);
+  ok('drift says what it saw', /2 top-level nodes/.test(drift.detail || ''));
+
+  // A missing course node is drift, not a crash.
+  check('no course node at all', bulk.courseTreeFromPageProps({}, 'g1', 'slug6').code, 'schema-drift');
+  check('null pageProps', bulk.courseTreeFromPageProps(null, 'g1', 'slug7').code, 'schema-drift');
+
+  // An unrecognised embed host must be named, never guessed into a platform.
+  const unknown = bulk.courseTreeFromPageProps({
+    course: { course: { id: 'c', metadata: { title: 'C' } }, children: [
+      { course: { id: 'x', metadata: { title: 'Odd', videoLink: 'https://videos.example.com/watch/1' } }, children: [] }
+    ] }
+  }, 'g1', 'slug8');
+  check('unrecognised host is "unknown", not a guess', unknown.lessons[0].sourceKind, SOURCE.UNKNOWN);
+  check('an unknown source still keeps its link', unknown.lessons[0].sourceRef, 'https://videos.example.com/watch/1');
+
+  // A host that merely ends in a known name is not that platform.
+  check('lookalike embed host', bulk.classifyEmbedHost('https://notloom.com/share/1'), null);
+  check('suffix embed host', bulk.classifyEmbedHost('https://vimeo.com.attacker.example/1'), null);
+  check('subdomain embed host', bulk.classifyEmbedHost('https://player.vimeo.com/video/1'), SOURCE.VIMEO);
+  check('embed garbage never throws', bulk.classifyEmbedHost('not a url'), null);
+
+  // A titleless course falls back to something identifiable, never "undefined".
+  check('untitled course names itself by slug',
+    bulk.courseTitleFrom({ course: { id: 'c0' } }, 'slug9'), 'Course slug9');
+}
 
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : '✓ all assertions hold'}`);
 process.exit(failures ? 1 : 0);
