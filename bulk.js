@@ -468,6 +468,85 @@ function parseResources(raw) {
   return out;
 }
 
+// ── Run diagnostics ───────────────────────────────────────────────────────────
+// These build the lines a bulk run writes to the debug log, which is what a
+// user's problem report actually carries.
+//
+// The binding constraint: a report includes only the LAST 10 log lines, each
+// capped at 300 characters. So a bulk run cannot log per lesson. A 40-lesson
+// course with 30 locked lessons would emit 30 near-identical lines and push the
+// run's own start line — the one naming the course, its shape and what was
+// asked for — out of the report before support ever reads it. Losing that line
+// is losing the diagnosis.
+//
+// Instead: one line at the start, one tallied line per distinct failure reason
+// with a worked example, and one line at the end whose counts add up. That is
+// four or five lines for a run of any size.
+
+const BULK_LOG_MAX = 300;
+
+// Truncation is visible. A line silently cut at 300 characters reads as complete
+// and sends whoever is diagnosing it down the wrong path.
+function clipLogLine(s) {
+  const flat = String(s).replace(/\s+/g, ' ').trim();
+  return flat.length <= BULK_LOG_MAX ? flat : `${flat.slice(0, BULK_LOG_MAX - 1)}…`;
+}
+
+function describeWant(want) {
+  const on = ['video', 'notes', 'files'].filter(k => want && want[k]);
+  return on.length ? on.join('+') : 'none';
+}
+
+function bulkRunStartLine({ courseTitle, shape, moduleCount, lessonCount, want, resumed }) {
+  const resume = Number(resumed) > 0 ? ` resume=${Number(resumed)}done` : '';
+  return clipLogLine(
+    `start "${courseTitle}" ${shape} ${moduleCount || 0}mod/${lessonCount || 0}les`
+    + ` want=${describeWant(want)}${resume}`);
+}
+
+function reasonTally() {
+  return { counts: Object.create(null), examples: Object.create(null) };
+}
+
+// Keeps the FIRST example of each reason, not the last: the first failure of a
+// kind is the one that happened before any retry or cascade muddied it.
+function tallyReason(tally, reason, detail) {
+  const key = (typeof reason === 'string' && reason.trim()) || 'unknown';
+  tally.counts[key] = (tally.counts[key] || 0) + 1;
+  if (detail != null && !(key in tally.examples)) tally.examples[key] = String(detail);
+  return tally;
+}
+
+function tallyPairs(tally) {
+  return Object.keys(tally?.counts || {})
+    .map(k => [k, tally.counts[k]])
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+// Commonest reason first — with the line capped, the reason affecting the most
+// lessons is the one that must survive the cut.
+function describeTally(tally) {
+  const pairs = tallyPairs(tally);
+  return pairs.length ? clipLogLine(pairs.map(([k, n]) => `${k}×${n}`).join(', ')) : 'none';
+}
+
+function tallyExamples(tally) {
+  const pairs = tallyPairs(tally);
+  return clipLogLine(pairs
+    .filter(([k]) => k in (tally.examples || {}))
+    .map(([k]) => `${k}: ${tally.examples[k]}`)
+    .join(' | '));
+}
+
+// The counts add up to the total by construction (see runSummary), and the line
+// states the total, so a run that saved 12 of 40 cannot read as finished.
+function bulkRunEndLine(summary) {
+  const parts = [`${summary.saved} saved`];
+  if (summary.skipped) parts.push(`${summary.skipped} skipped (${describeTally({ counts: summary.skippedByReason })})`);
+  if (summary.failed) parts.push(`${summary.failed} failed (${describeTally({ counts: summary.failedByReason })})`);
+  return clipLogLine(`done ${summary.total}les: ${parts.join(', ')}`);
+}
+
 // ── Skool-native playback ─────────────────────────────────────────────────────
 // A lesson page carries its own signed playback data at pageProps.video.
 //
@@ -589,6 +668,7 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeForFs, capSegment, padIndex, bulkLessonBase, extensionOf, attachmentFilename,
     descToMarkdown, notesDocument,
     FILE_ID_RE, parseResources,
+    BULK_LOG_MAX, clipLogLine, bulkRunStartLine, reasonTally, tallyReason, describeTally, tallyExamples, bulkRunEndLine,
     NATIVE_HOST_PRIMARY, NATIVE_HOST_FALLBACK, nativePlaybackFrom,
     SETTLED_SKIP_KINDS, isSettled, normalizeAssets, lessonNeedsWork, mergeManifest, runSummary,
   };

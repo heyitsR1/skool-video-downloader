@@ -576,5 +576,68 @@ console.log('\nnativePlaybackFrom (§2.5)');
     'https://stream.video.skool.com/a%2Fb.m3u8?token=t');
 }
 
+console.log('\nrun diagnostics');
+{
+  check('start line fingerprints the run', bulk.bulkRunStartLine({
+    courseTitle: 'My Course', shape: 'nested', moduleCount: 3, lessonCount: 40,
+    want: { video: true, notes: true, files: true },
+  }), 'start "My Course" nested 3mod/40les want=video+notes+files');
+
+  check('a resumed run says so', bulk.bulkRunStartLine({
+    courseTitle: 'My Course', shape: 'flat', moduleCount: 0, lessonCount: 3,
+    want: { video: true, notes: false, files: false }, resumed: 12,
+  }), 'start "My Course" flat 0mod/3les want=video resume=12done');
+
+  check('nothing wanted is stated, not blank', bulk.bulkRunStartLine({
+    courseTitle: 'C', shape: 'flat', moduleCount: 0, lessonCount: 1, want: {},
+  }), 'start "C" flat 0mod/1les want=none');
+
+  // Reasons are tallied, never logged per lesson: the report carries only the
+  // last 10 lines, so one line per lesson evicts the run's own start line.
+  const t = bulk.reasonTally();
+  bulk.tallyReason(t, 'locked', 'lesson "Intro": no playback token');
+  bulk.tallyReason(t, 'locked', 'lesson "Setup": no playback token');
+  bulk.tallyReason(t, 'network', 'lesson "Deep Dive": HTTP 503');
+  check('tally counts by reason', bulk.describeTally(t), 'locked×2, network×1');
+  check('the first example of each reason is kept', bulk.tallyExamples(t),
+    'locked: lesson "Intro": no playback token | network: lesson "Deep Dive": HTTP 503');
+  check('an empty tally describes as none', bulk.describeTally(bulk.reasonTally()), 'none');
+  check('a missing reason is named, not blank',
+    bulk.describeTally(bulk.tallyReason(bulk.reasonTally(), null, 'x')), 'unknown×1');
+  check('the commonest reason is listed first', bulk.describeTally(
+    ['a', 'b', 'b', 'b'].reduce((acc, r) => bulk.tallyReason(acc, r, 'd'), bulk.reasonTally())),
+    'b×3, a×1');
+
+  check('end line accounts for every lesson', bulk.bulkRunEndLine(bulk.runSummary([
+    ...Array(25).fill({ status: 'saved' }),
+    ...Array(12).fill({ status: 'skipped', reason: 'locked' }),
+    ...Array(3).fill({ status: 'failed', reason: 'network' }),
+  ])), 'done 40les: 25 saved, 12 skipped (locked×12), 3 failed (network×3)');
+
+  check('a clean run says so plainly',
+    bulk.bulkRunEndLine(bulk.runSummary(Array(4).fill({ status: 'saved' }))),
+    'done 4les: 4 saved');
+  check('an empty run is still a line', bulk.bulkRunEndLine(bulk.runSummary([])), 'done 0les: 0 saved');
+
+  // Every line must survive the report worker's 300-char cap intact enough to
+  // read, and say so when it did not.
+  const huge = bulk.bulkRunStartLine({
+    courseTitle: 'C'.repeat(500), shape: 'flat', moduleCount: 0, lessonCount: 1,
+    want: { video: true },
+  });
+  ok('an overlong start line is capped', huge.length <= 300);
+  ok('and marks itself as cut', huge.endsWith('…'));
+
+  const manyReasons = bulk.reasonTally();
+  for (let i = 0; i < 200; i++) bulk.tallyReason(manyReasons, `reason-${i}`, `detail ${i}`);
+  ok('a tally of many reasons is capped', bulk.describeTally(manyReasons).length <= 300);
+  ok('examples are capped too', bulk.tallyExamples(manyReasons).length <= 300);
+  ok('the cap does not lose the count', /reason-\d+×1/.test(bulk.describeTally(manyReasons)));
+
+  // A newline would split one log entry into two in the dashboard's list.
+  check('a detail containing a newline is flattened',
+    bulk.tallyExamples(bulk.tallyReason(bulk.reasonTally(), 'x', 'a\nb')), 'x: a b');
+}
+
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : '✓ all assertions hold'}`);
 process.exit(failures ? 1 : 0);
