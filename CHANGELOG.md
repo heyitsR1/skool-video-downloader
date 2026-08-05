@@ -14,6 +14,27 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.1 — 2026-08-05
+
+### Fixed
+- **Cancel stops a course backup straight away.** Pressing it could appear to do
+  nothing for minutes. Every reason for that is gone: the click is acknowledged
+  on screen instead of the run repainting over it, a cancel while a lesson is
+  being resolved no longer downloads that whole lesson first, requests already in
+  flight are aborted rather than waited out, and the merge is stopped instead of
+  running to completion.
+- **Cancel works on a paused backup.** It previously did nothing at all — the
+  panel stayed on "Paused" through reopening the popup and restarting the
+  browser, with no way to end the run except **Re-download everything**.
+- **A cancelled lesson is no longer reported as a failure.** Nothing was saved for
+  it and none was attempted, so the summary and `_download-log.txt` now say "not
+  attempted" rather than counting a deliberate stop as something that went wrong.
+
+### Added
+- A short notice before a course backup starts, saying that the feature is in
+  Beta and — more usefully — where the Report button is and which file to send
+  if a run goes wrong.
+
 ## 1.5.0 — 2026-08-04
 
 ### Added

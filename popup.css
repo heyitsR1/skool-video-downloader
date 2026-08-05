@@ -394,6 +394,8 @@ body {
 /* Reserved height: the line changes on every asset, and letting it collapse
    when empty makes the buttons under it jump. */
 .bulk__line { font-size: 10.5px; color: var(--muted); min-height: 14px; margin-top: 6px; }
+/* Cancelling is the one line here the user is waiting on, so it is not muted. */
+.bulk__line--busy { color: var(--accent-strong); font-weight: 600; }
 .bulk__detail { margin: 6px 0 0; padding-left: 16px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) { .bulk__bar-fill { transition: none; } }
 

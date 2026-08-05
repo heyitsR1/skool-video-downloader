@@ -754,6 +754,7 @@ const bulkEl = (id) => document.getElementById(id);
 const bulkT = (key, ...subs) => chrome.i18n.getMessage(key, subs.map(String));
 let bulkCtx = null;      // preflight result: { group, courseSlug, courseTitle, total, … }
 let bulkRestartArmed = false;
+let bulkIsPro = false;   // remembered from the last init, so the panel can rebuild itself
 
 function bulkShow(which) {
   for (const pane of BULK_PANES) bulkEl(pane).classList.toggle('hidden', pane !== which);
@@ -771,6 +772,10 @@ function bulkWant() {
 
 async function initBulkPanel(tabUrl, isPro) {
   if (!tabUrl?.includes('/classroom')) return;
+  // Kept so the panel can rebuild itself later — cancelling a paused run ends it
+  // without producing a summary, and the only honest thing to show next is a
+  // fresh preflight of what is on disk.
+  bulkIsPro = isPro;
 
   // A live or interrupted run wins over preflight, so reopening mid-run shows the
   // run rather than an invitation to start a second one.
@@ -852,7 +857,16 @@ function bulkRenderRunning(state) {
   bulkEl('bulk-bar-fill').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
   bulkEl('bulk-count').textContent = bulkT('bulkProgress', done, total);
   bulkEl('bulk-current').textContent = state.currentTitle || '';
-  bulkEl('bulk-line').textContent = state.lastLine || '';
+  // Stopping takes as long as the current file needs to unwind, and every
+  // progress broadcast during that window used to repaint the run as if the
+  // click had never happened — which is what made Cancel read as broken. The
+  // flag is carried on the state itself, so a popup reopened mid-cancel shows
+  // this too, and the buttons go dead rather than inviting a second click.
+  const cancelling = !!state.cancelling;
+  bulkEl('bulk-line').textContent = cancelling ? bulkT('bulkCancelling') : (state.lastLine || '');
+  bulkEl('bulk-line').classList.toggle('bulk__line--busy', cancelling);
+  bulkEl('bulk-pause').disabled = cancelling;
+  bulkEl('bulk-cancel').disabled = cancelling;
   bulkShow('bulk-running');
 }
 
@@ -910,6 +924,26 @@ async function bulkStart(type) {
   bulkRenderRunning({ done: 0, total: bulkCtx.total, currentTitle: '', lastLine: '' });
 }
 
+// Shown before every backup, not once. The notice is not really a warning — it
+// is where the user learns how to report a bad run, and the run that goes wrong
+// is as likely to be their fourth as their first.
+function bulkConfirmBeta(type) {
+  if (!bulkCtx) return;
+  const modal = bulkEl('bulk-beta-modal');
+  const go = bulkEl('bulk-beta-go');
+  const close = () => {
+    modal.classList.add('hidden');
+    go.removeEventListener('click', accept);
+    for (const el of modal.querySelectorAll('[data-close-beta]')) el.removeEventListener('click', close);
+  };
+  // Named so it can be removed again: the sheet is reopened on every run, and
+  // listeners left behind would start one extra backup per previous opening.
+  const accept = () => { close(); bulkStart(type); };
+  go.addEventListener('click', accept);
+  for (const el of modal.querySelectorAll('[data-close-beta]')) el.addEventListener('click', close);
+  modal.classList.remove('hidden');
+}
+
 // Two-step rather than confirm(): a modal dialog can close the popup out from
 // under the run, and this discards a record of work already on disk.
 const BULK_RESTART_BUTTONS = ['bulk-restart', 'bulk-restart-done'];
@@ -921,14 +955,35 @@ function bulkDisarmRestart() {
 }
 
 function setupBulkPanel() {
-  bulkEl('bulk-start').addEventListener('click', () => bulkStart('START_BULK'));
-  bulkEl('bulk-resume-go').addEventListener('click', () => bulkStart('RESUME_BULK'));
+  // Both of these begin a long run, so both go through the Beta notice. Unpause
+  // does not: it is the same run the user already accepted.
+  bulkEl('bulk-start').addEventListener('click', () => bulkConfirmBeta('START_BULK'));
+  bulkEl('bulk-resume-go').addEventListener('click', () => bulkConfirmBeta('RESUME_BULK'));
   bulkEl('bulk-unpause').addEventListener('click', () => bulkStart('RESUME_BULK'));
   bulkEl('bulk-pause').addEventListener('click', () => send({ type: 'PAUSE_BULK' }));
   bulkEl('bulk-again').addEventListener('click', () => bulkShow('bulk-idle'));
-  for (const id of ['bulk-cancel', 'bulk-cancel-2']) {
-    bulkEl(id).addEventListener('click', () => send({ type: 'CANCEL_BULK' }));
-  }
+
+  // Cancelling a running backup: paint the stopping state now rather than
+  // waiting for the background to answer. The click has to land visibly even
+  // though the run needs a moment to unwind, or it reads as a dead button.
+  bulkEl('bulk-cancel').addEventListener('click', () => {
+    bulkEl('bulk-cancel').disabled = true;
+    bulkEl('bulk-pause').disabled = true;
+    bulkEl('bulk-line').textContent = bulkT('bulkCancelling');
+    bulkEl('bulk-line').classList.add('bulk__line--busy');
+    send({ type: 'CANCEL_BULK' });
+  });
+
+  // Cancelling a paused backup ends a run that is not executing, so there is no
+  // progress to stop and no summary to show — rebuild the panel from a fresh
+  // preflight instead.
+  // The rebuild is driven by the BULK_ENDED broadcast below rather than from
+  // here, so a second open popup follows along instead of being left on a pane
+  // for a run that no longer exists.
+  bulkEl('bulk-cancel-2').addEventListener('click', () => {
+    bulkEl('bulk-cancel-2').disabled = true;
+    send({ type: 'CANCEL_BULK' });
+  });
   // On both the resume pane and the finished pane. A run that just completed is
   // exactly when a user notices something is missing, and leaving them only
   // "Back" drops them on a start button that does nothing, because every lesson
@@ -952,6 +1007,11 @@ function setupBulkPanel() {
       else if (msg.state.phase === 'paused') bulkRenderPaused(msg.state);
     } else if (msg?.type === 'BULK_DONE') {
       bulkRenderDone(msg);
+    } else if (msg?.type === 'BULK_ENDED') {
+      // A paused run was cancelled. It produced no summary, so the honest next
+      // screen is a fresh preflight of what is actually on disk.
+      bulkEl('bulk-cancel-2').disabled = false;
+      initBulkPanel(activeTab?.url, bulkIsPro);
     }
   });
 }

@@ -210,6 +210,30 @@
     </div>
   </div>
 
+  <!-- Course backup Beta notice. Shown before every run rather than once: the
+       point is not the warning, it is that the way to report a problem is known
+       BEFORE there is one — and the run that goes wrong is as likely to be the
+       fourth as the first. An in-popup sheet, not confirm(): a native dialog can
+       close the popup out from under the run (see BULK_RESTART_BUTTONS). -->
+  <div id="bulk-beta-modal" class="modal hidden">
+    <div class="modal__backdrop" data-close-beta></div>
+    <div class="modal__sheet modal__sheet--form">
+      <button class="modal__close" data-close-beta data-i18n-aria-label="closeAria" aria-label="Close">&times;</button>
+      <h2 class="modal__title" data-i18n="bulkBetaTitle">Course backup is in Beta</h2>
+      <div class="modal__scroll">
+        <p class="modal__sub modal__sub--sm" data-i18n="bulkBetaSub">This backs up a course you already have access to. It works, but it is new — on a long course it can still miss a lesson or stop early.</p>
+        <ul class="bulk__detail">
+          <li data-i18n="bulkBetaReport">If something goes wrong, click 🚩 Report at the top of this window — it sends us what the extension saw.</li>
+          <li data-i18n="bulkBetaLog">For a problem with the whole run, email _download-log.txt to support@skoolvideodownload.com. It is written into the course folder when the run finishes.</li>
+        </ul>
+      </div>
+      <div class="modal__actions">
+        <button id="bulk-beta-go" class="btn btn--primary" data-i18n="bulkBetaGo">Start backup</button>
+        <button class="modal__later" data-close-beta data-i18n="bulkBetaLater">Not now</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Pricing modal -->
   <div id="pricing-modal" class="modal hidden">
     <div class="modal__backdrop" data-close></div>

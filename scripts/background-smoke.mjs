@@ -1259,12 +1259,16 @@ console.log('\nbulk orchestrator invariants');
   const loop = src.slice(src.indexOf('for (const lesson of merged)'));
   ok('each lesson runs inside its own try', /try \{[\s\S]{0,400}runBulkLesson/.test(loop));
 
-  // Cancelling means stop, not discard.
-  ok('cancel does not clear the manifest', !/clearManifest/.test(caseBody('CANCEL_BULK')));
+  // Cancelling means stop, not discard. Read from the helper the case delegates
+  // to, not the case body: what matters is that a cancel reaches these, not
+  // which function holds them.
+  const cancelFn = src.slice(src.indexOf('async function cancelBulkRun'),
+    src.indexOf('async function getBulkState'));
+  ok('cancel does not clear the manifest', !/clearManifest/.test(cancelFn));
   // …and it does reach the download already in flight: the lesson loop only
   // checks the flags between lessons, so without this a cancel waits out the
   // rest of a long video.
-  ok('cancel stops the download in flight', /cancelJob\(bulkCurrentJobId\)/.test(caseBody('CANCEL_BULK')));
+  ok('cancel stops the download in flight', /cancelJob\(bulkCurrentJobId\)/.test(cancelFn));
 
   // A UI-only Pro check is not a gate.
   ok('starting a run is gated on the tier here',
@@ -1289,6 +1293,83 @@ console.log('\nbulk orchestrator invariants');
 
   // Access is decided on the playback token, never on a hasAccess flag.
   ok('access is not decided from hasAccess', !/hasAccess/.test(src));
+
+  // Cancel must stop the work in flight, not only the work not yet started.
+  // Each of these was a place a cancelled run kept going.
+  ok('the job cancel aborts its signal', /cancel: \(\) => \{ cancelled\[0\] = true; ac\.abort\(\); \}/.test(src));
+  ok('the merge is killed by closing its offscreen document',
+    /signal\?\.addEventListener\('abort', killMerge/.test(src));
+  // Cancel most often lands while a lesson is resolving, when there is no job to
+  // cancel yet — without this the run downloads a whole extra lesson first.
+  const lessonFn = src.slice(src.indexOf('async function runBulkLesson'));
+  ok('a cancel during resolve stops before the download starts',
+    /if \(bulkAbort\.cancel\) return \{ status: 'aborted' \};/.test(lessonFn));
+  ok('a cancelled lesson is not recorded as a failure',
+    !/status: 'failed', reason: 'cancelled'/.test(src));
+  // notAttempted is derived as `total - records.length`, so an abandoned lesson
+  // reports honestly only by staying out of the list — the break has to come
+  // first. Ordering, not presence: a break after the push counts the lesson.
+  const runLoop = src.slice(src.indexOf('for (const lesson of merged)'));
+  const breakAt = runLoop.indexOf("if (record?.status === 'aborted') break;");
+  ok('an aborted lesson is left out of the records',
+    breakAt >= 0 && breakAt < runLoop.indexOf('records.push({ ...record'));
+  // A paused run has already returned, so the flag alone reaches nothing.
+  ok('cancelling a paused run ends it', /bulkBroadcast\(\{ type: 'BULK_ENDED' \}\)/.test(src));
+  // setBulkState is a read-modify-write. Patched in, the flag is lost whenever a
+  // progress write read the state before the cancel landed — and the run goes
+  // back to repainting as though nothing was clicked.
+  ok('the cancelling flag is derived, never patched',
+    /cancelling: bulkRunActive && bulkAbort\.cancel/.test(src)
+    && !/setBulkState\(\{[^}]*cancelling:/.test(src));
+}
+
+// ── 6. Cancel is fatal; a timeout is a retry ─────────────────────────────────
+// fetchWithRetry has always used an AbortController for its own per-attempt
+// timeout, and treats that AbortError as a retryable network blip. The job's
+// cancel now aborts the same controller — so the two arrive identically and the
+// signal is the only thing that tells them apart. Get this wrong and a cancelled
+// download retries itself for the full ~13-minute network budget.
+console.log('\ncancel vs timeout — the same AbortError, different meanings:');
+{
+  const code = extract('background.js', [
+    'RETRYABLE_STATUS', 'NET_MAX_RETRIES', 'NET_BACKOFF_CAP_MS', 'ATTEMPT_TIMEOUT_MS',
+    'NETWORK_FAILURE_MESSAGE', 'fatal', 'segmentFailureMessage', 'backoff', 'fetchWithRetry',
+  ]);
+  const make = (fetchImpl) => new Function('fetch', `${code}\nreturn fetchWithRetry;`)(fetchImpl);
+  const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
+
+  // Already cancelled: nothing should go out at all.
+  let calls = 0;
+  const ac1 = new AbortController(); ac1.abort();
+  await make(async () => { calls++; return new Response('x'); })('u', { signal: ac1.signal })
+    .then(() => check('a pre-cancelled fetch throws', 'resolved', 'Cancelled'),
+      (e) => check('a pre-cancelled fetch throws', e.message, 'Cancelled'));
+  check('…and never reaches the network', calls, 0);
+
+  // Cancelled mid-flight: one attempt, then stop — and stop *now*. The loop-top
+  // check catches an aborted signal on its own, but only after the catch block
+  // has already served a backoff delay, so a cancel that is merely correct still
+  // reads as an unresponsive button. Timed rather than counted, because the call
+  // count is identical either way: this asserts the wait is not taken at all.
+  calls = 0;
+  const ac2 = new AbortController();
+  const startedAt = Date.now();
+  await make(async () => { calls++; ac2.abort(); throw abortError(); })('u', { signal: ac2.signal })
+    .then(() => check('a cancel mid-request throws', 'resolved', 'Cancelled'),
+      (e) => check('a cancel mid-request throws', e.message, 'Cancelled'));
+  check('…without retrying', calls, 1);
+  // backoff's first step is 500ms plus up to 300ms of jitter.
+  ok('…and without serving a backoff first', Date.now() - startedAt < 250);
+
+  // The same error with no cancel behind it is the per-attempt timeout, and must
+  // still retry — otherwise this fix trades a stall for a flaky download.
+  calls = 0;
+  const body = await make(async () => {
+    if (++calls === 1) throw abortError();
+    return new Response('segment');
+  })('u', { read: 'text' });
+  check('a timeout with no cancel still retries', body, 'segment');
+  check('…exactly once here', calls, 2);
 }
 
 console.log(failures ? `\n✗ ${failures} failed\n` : '\n✓ all passed\n');

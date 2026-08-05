@@ -590,6 +590,27 @@
   "bulkBeta": {
     "message": "Beta"
   },
+  "bulkBetaTitle": {
+    "message": "Course backup is in Beta"
+  },
+  "bulkBetaSub": {
+    "message": "This backs up a course you already have access to. It works, but it is new — on a long course it can still miss a lesson or stop early."
+  },
+  "bulkBetaReport": {
+    "message": "If something goes wrong, click 🚩 Report at the top of this window — it sends us what the extension saw."
+  },
+  "bulkBetaLog": {
+    "message": "For a problem with the whole run, email _download-log.txt to support@skoolvideodownload.com. It is written into the course folder when the run finishes."
+  },
+  "bulkBetaGo": {
+    "message": "Start backup"
+  },
+  "bulkBetaLater": {
+    "message": "Not now"
+  },
+  "bulkCancelling": {
+    "message": "Cancelling — stopping after the current file…"
+  },
   "reportChip": {
     "message": "Report"
   },

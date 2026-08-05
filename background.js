@@ -883,12 +883,17 @@ function fatal(message, { throttle = false } = {}) {
 // isCancelled is checked between attempts because the network budget is now
 // nearly a minute: without it, pressing Cancel on a throttled download would sit
 // there backing off long after the user gave up.
-async function fetchWithRetry(url, { maxRetries = 4, read = 'blob', isCancelled } = {}) {
+async function fetchWithRetry(url, { maxRetries = 4, read = 'blob', isCancelled, signal } = {}) {
   let netFailures = 0;
   for (let attempt = 0; ; attempt++) {
-    if (isCancelled?.()) throw fatal('Cancelled');
+    if (isCancelled?.() || signal?.aborted) throw fatal('Cancelled');
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), ATTEMPT_TIMEOUT_MS);
+    // Between-attempt checks are not enough on their own: segments are fetched
+    // ten at a time, so without aborting the requests already in flight a cancel
+    // waits for all ten to land. The job's signal aborts this attempt directly.
+    const onCancel = () => ctl.abort();
+    signal?.addEventListener('abort', onCancel, { once: true });
     try {
       const r = await fetch(url, { signal: ctl.signal });
       if (!r.ok) {
@@ -903,6 +908,11 @@ async function fetchWithRetry(url, { maxRetries = 4, read = 'blob', isCancelled 
       return read === 'text' ? await r.text() : await r.blob();
     } catch (e) {
       if (e?.svdFatal) throw e;
+      // A cancel aborts the same controller the timeout does, so the AbortError
+      // alone cannot tell them apart — and retrying a cancelled fetch is exactly
+      // the stall this signal exists to remove. Checked before the network
+      // family below, because a cancel is fatal and a timeout is a retry.
+      if (isCancelled?.() || signal?.aborted) throw fatal('Cancelled');
       // AbortError (our timeout) and TypeError (reset/refused/DNS) are the
       // network family. Anything else is a bug in here and should surface.
       if (e?.name !== 'AbortError' && e?.name !== 'TypeError') throw e;
@@ -910,6 +920,7 @@ async function fetchWithRetry(url, { maxRetries = 4, read = 'blob', isCancelled 
       await backoff(netFailures - 1, undefined, NET_BACKOFF_CAP_MS);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onCancel);
     }
   }
 }
@@ -993,9 +1004,9 @@ function segmentFailureMessage(status) {
   return `Segment fetch failed: HTTP ${status}`;
 }
 
-async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType, onWait, onCooldown }) {
+async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeType, onWait, onCooldown, signal }) {
   const text = await withThrottleCooldown(
-    () => fetchWithRetry(playlistUrl, { read: 'text', isCancelled }),
+    () => fetchWithRetry(playlistUrl, { read: 'text', isCancelled, signal }),
     { isCancelled, onWait, onCooldown });
   const baseUrl = playlistUrl.substring(0, playlistUrl.lastIndexOf('/') + 1);
   const parentQuery = (playlistUrl.split('?')[1] || '');
@@ -1004,7 +1015,7 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
   const mapMatch = text.match(/#EXT-X-MAP:URI="([^"]+)"/);
   if (mapMatch) {
     blobs.push(await withThrottleCooldown(
-      () => fetchWithRetry(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery), { read: 'blob', isCancelled }),
+      () => fetchWithRetry(resolvePlaylistUrl(mapMatch[1], baseUrl, parentQuery), { read: 'blob', isCancelled, signal }),
       { isCancelled, onWait, onCooldown }));
   }
 
@@ -1023,7 +1034,7 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
     if (isCancelled?.()) throw new Error('Cancelled');
     const batch = segments.slice(i, i + BATCH);
     const parts = await withThrottleCooldown(
-      () => Promise.all(batch.map(u => fetchWithRetry(u, { read: 'blob', isCancelled }))),
+      () => Promise.all(batch.map(u => fetchWithRetry(u, { read: 'blob', isCancelled, signal }))),
       { isCancelled, onWait, onCooldown });
     blobs.push(...parts);
     bytes += parts.reduce((n, b) => n + b.size, 0);
@@ -1038,14 +1049,14 @@ async function downloadRendition(playlistUrl, { onProgress, isCancelled, mimeTyp
 // a fresh read is both smaller and more likely to still be valid. The init
 // segment arrives base64-inline (no request of its own) and must lead, since it
 // carries the fMP4 moov the concatenated media segments are useless without.
-async function downloadVimeoTrack(playlistUrl, kind, trackId, { onProgress, isCancelled, onWait, onCooldown }) {
+async function downloadVimeoTrack(playlistUrl, kind, trackId, { onProgress, isCancelled, onWait, onCooldown, signal }) {
   const pl = await fetchVimeoPlaylist(playlistUrl);
   const track = vimeoTrackSegments(pl, playlistUrl, kind, trackId);
   const blobs = [];
   if (track.init) blobs.push(base64ToBlob(track.init));
   else if (track.initUrl) {
     blobs.push(await withThrottleCooldown(
-      () => fetchWithRetry(track.initUrl, { read: 'blob', isCancelled }),
+      () => fetchWithRetry(track.initUrl, { read: 'blob', isCancelled, signal }),
       { isCancelled, onWait, onCooldown }));
   }
   if (!track.urls.length) throw new Error('No segments in Vimeo playlist');
@@ -1058,7 +1069,7 @@ async function downloadVimeoTrack(playlistUrl, kind, trackId, { onProgress, isCa
     if (isCancelled?.()) throw new Error('Cancelled');
     const batch = track.urls.slice(i, i + BATCH);
     const parts = await withThrottleCooldown(
-      () => Promise.all(batch.map(u => fetchWithRetry(u, { read: 'blob', isCancelled }))),
+      () => Promise.all(batch.map(u => fetchWithRetry(u, { read: 'blob', isCancelled, signal }))),
       { isCancelled, onWait, onCooldown });
     blobs.push(...parts);
     bytes += parts.reduce((n, b) => n + b.size, 0);
@@ -1091,8 +1102,17 @@ function trackDownloader(quality, which) {
 
 // Direct progressive download (Vimeo/Wistia/Loom/YouTube muxed MP4) with byte
 // progress from the streamed response body.
-async function downloadDirect(url, { onProgress, isCancelled, mimeType }) {
-  const res = await fetch(url, { credentials: 'include' });
+async function downloadDirect(url, { onProgress, isCancelled, mimeType, signal }) {
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'include', signal });
+  } catch (e) {
+    // A cancelled fetch rejects with AbortError. Reported as itself, so it
+    // settles the job as cancelled rather than as a network failure the user
+    // never caused.
+    if (signal?.aborted || isCancelled?.()) throw new Error('Cancelled');
+    throw e;
+  }
   if (!res.ok) throw new Error(`File fetch failed: ${res.status}`);
   const total = parseInt(res.headers.get('content-length') || '0', 10);
   if (!res.body) return await res.blob();
@@ -1101,7 +1121,15 @@ async function downloadDirect(url, { onProgress, isCancelled, mimeType }) {
   let received = 0;
   for (;;) {
     if (isCancelled?.()) throw new Error('Cancelled');
-    const { done, value } = await reader.read();
+    let done, value;
+    try {
+      ({ done, value } = await reader.read());
+    } catch (e) {
+      // Aborting mid-body errors the stream. Same reasoning as above: the read
+      // loop's own check only fires between chunks, and a chunk can be large.
+      if (signal?.aborted || isCancelled?.()) throw new Error('Cancelled');
+      throw e;
+    }
     if (done) break;
     chunks.push(value);
     received += value.length;
@@ -1506,20 +1534,33 @@ function withTimeout(promise, ms, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving) {
+function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving, signal) {
   assertUsableVideo(videoBlob);
   return withOffscreen(async () => {
     const jobId = Date.now();
     const videoKey = `https://skool-merge.local/${jobId}/video`;
     const audioKey = `https://skool-merge.local/${jobId}/audio`;
     const cache = await putBlobs([[videoKey, videoBlob], [audioKey, audioBlob]]);
+    // ffmpeg.wasm cannot be interrupted, but the page hosting it can be closed —
+    // and that takes the merge with it. Without this, Cancel at 82% waits out the
+    // whole merge, which on a long lesson is the slowest un-cancellable step in
+    // the run. The finally below closes it again; closeOffscreenDocument is
+    // guarded by hasOffscreenDocument, so the second close is a no-op.
+    const killMerge = () => { closeOffscreenDocument().catch(() => {}); };
+    signal?.addEventListener('abort', killMerge, { once: true });
     try {
+      if (signal?.aborted) throw new Error('Cancelled');
       await ensureOffscreenDocument();
       const result = await withTimeout(
         sendToOffscreen({ type: 'MERGE_AV', videoKey, audioKey, tabId }),
         MERGE_TIMEOUT_MS,
         'Merge timed out — this video may be too large for the in-browser merger.'
       );
+      // sendToOffscreen resolves rather than rejects when the port dies, so a
+      // killed merge arrives here as an ordinary failure. Checked before the
+      // message is read: "Merge failed" would send the user chasing a bug that
+      // is really their own cancel.
+      if (signal?.aborted) throw new Error('Cancelled');
       if (!result?.success) throw new Error(result?.error || 'Merge failed');
       // The merge is done; handing a multi-GB blob to Chrome can take a while on
       // its own, so move the bar off "merging" rather than looking frozen at 82%.
@@ -1529,6 +1570,7 @@ function mergeAndSave(videoBlob, audioBlob, filename, tabId, onSaving) {
       if (state !== 'complete') throw new Error(saveFailureMessage(state, error));
       return downloadId;   // see saveBlob — the manifest's disk check needs it
     } finally {
+      signal?.removeEventListener('abort', killMerge);
       await Promise.all([cache.delete(videoKey), cache.delete(audioKey)]).catch(() => {});
       await sendToOffscreen({ type: 'MERGE_CLEANUP' }).catch(() => {});
       await closeOffscreenDocument();
@@ -1605,9 +1647,15 @@ function pump() {
 async function runJob(job) {
   const { jobId, quality, filename, tabId, mode } = job;
   const cancelled = [false];
+  // The flag settles the job; the signal stops the work already in flight —
+  // fetches mid-request and the merge running in the offscreen document. The
+  // flag alone can only be read between steps, which is why Cancel used to sit
+  // through a batch of ten segments or an entire merge before anything happened.
+  const ac = new AbortController();
   const meta = { jobId, filename, platform: quality.platform, mode, percent: 0, phase: 'starting', speed: '' };
-  activeJobs.set(jobId, { cancel: () => { cancelled[0] = true; }, meta });
+  activeJobs.set(jobId, { cancel: () => { cancelled[0] = true; ac.abort(); }, meta });
   const isCancelled = () => cancelled[0];
+  const signal = ac.signal;
 
   // Speed tracker.
   let lastBytes = 0, lastTs = Date.now();
@@ -1642,7 +1690,7 @@ async function runJob(job) {
   };
   const onCooldown = (ms, round) => svdLog('download',
     `throttled at ${meta.percent}% — holding progress, retrying in ${Math.round(ms / 1000)}s (round ${round + 1}/${COOLDOWNS_MS.length})`);
-  const netOpts = { onWait, onCooldown };
+  const netOpts = { onWait, onCooldown, signal };
 
   let ruleId = null;
   try {
@@ -1686,7 +1734,7 @@ async function runJob(job) {
 
     } else if (quality.kind === 'mp4') {
       const blob = await downloadDirect(quality.videoUrl, {
-        isCancelled, mimeType: 'video/mp4',
+        isCancelled, signal, mimeType: 'video/mp4',
         onProgress: (done, total, bytes) => setPct(total ? (done / total) * 95 : 50, 'downloading', bytes)
       });
       setPct(97, 'saving');
@@ -1707,7 +1755,7 @@ async function runJob(job) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'), signal);
       }
 
     } else if (quality.kind === 'vimeo-json') {
@@ -1725,21 +1773,21 @@ async function runJob(job) {
         });
         if (isCancelled()) throw new Error('Cancelled');
         setPct(82, 'merging');
-        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+        meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'), signal);
       }
 
     } else if (quality.kind === 'merge') {
       const videoBlob = await downloadDirect(quality.videoUrl, {
-        isCancelled, mimeType: 'video/mp4',
+        isCancelled, signal, mimeType: 'video/mp4',
         onProgress: (d, t, b) => setPct(t ? (d / t) * 55 : 40, 'downloading', b)
       });
       const audioBlob = await downloadDirect(quality.audioUrl, {
-        isCancelled, mimeType: 'audio/mp4',
+        isCancelled, signal, mimeType: 'audio/mp4',
         onProgress: (d, t, b) => setPct(t ? 55 + (d / t) * 25 : 70, 'downloading', b)
       });
       if (isCancelled()) throw new Error('Cancelled');
       setPct(82, 'merging');
-      meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'));
+      meta.downloadId = await mergeAndSave(videoBlob, audioBlob, filename, tabId, () => setPct(97, 'saving'), signal);
     }
 
     meta.percent = 100; meta.phase = 'done'; meta.speed = '';
@@ -2013,14 +2061,11 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       return false;
 
     case 'CANCEL_BULK':
-      bulkAbort.cancel = true;
-      // Cancelling stops the run but keeps the manifest — it means "stop", not
-      // "throw away what I already downloaded". The in-flight download is
-      // cancelled too: the loop only checks the abort flags between lessons, so
-      // without this a cancel would sit through the rest of a long video.
-      if (bulkCurrentJobId !== null) cancelJob(bulkCurrentJobId);
-      sendResponse({ ok: true });
-      return false;
+      // Answered only once the new state is written: the popup rebuilds itself
+      // from that state, and replying first would let it read the one this just
+      // replaced.
+      cancelBulkRun().then(() => sendResponse({ ok: true }));
+      return true;
 
     case 'GET_BULK_STATE':
       getBulkState().then(state => sendResponse({ ok: true, state }));
@@ -2554,13 +2599,56 @@ let bulkAbort = { pause: false, cancel: false };
 // most one at a time, and CANCEL_BULK needs it to stop a download mid-file.
 let bulkCurrentJobId = null;
 
+// Cancel means "stop", not "throw away what I already downloaded": the manifest
+// survives either way. What it has to do beyond setting the flag depends on
+// which pane it was pressed from, because only one of them has a live run
+// behind it.
+async function cancelBulkRun() {
+  bulkAbort.cancel = true;
+  // The loop only checks the abort flags between lessons, so without this a
+  // cancel would sit through the rest of a long video.
+  if (bulkCurrentJobId !== null) cancelJob(bulkCurrentJobId);
+
+  if (bulkRunActive) {
+    // Stopping is not instant — the current file still has to unwind — so it has
+    // to be a state the UI can show, not a silent gap. setBulkState merges over
+    // the previous state, so this flag rides along on every progress broadcast
+    // that follows instead of being overwritten by one. Every open popup sees
+    // it, including one opened after the click.
+    // An empty patch: the flag is derived inside setBulkState. The write exists
+    // to broadcast it, so every open popup repaints as stopping.
+    await setBulkState({});
+    return;
+  }
+
+  // Cancel is offered on the paused pane too, and a paused run has already
+  // returned — there is no loop left to notice the flag. Without this the button
+  // set a flag on a dead run and nothing else happened at all: the pane stayed
+  // "Paused" forever, through popup reopens and worker restarts, with no way to
+  // end the run but "Re-download everything".
+  //
+  // Ended rather than summarised: the records belong to a run that has already
+  // exited, and inventing counts from `done` would be a guess. The manifest is
+  // kept, as it is for any cancel, so the next preflight reports what is
+  // actually on disk.
+  bulkLog('paused run cancelled');
+  await setBulkState({ phase: 'ended' });
+  bulkBroadcast({ type: 'BULK_ENDED' });
+}
+
 async function getBulkState() {
   const got = await chrome.storage.session.get(BULK_STATE_KEY);
   return got[BULK_STATE_KEY] || null;
 }
 async function setBulkState(patch) {
   const prev = await getBulkState();
-  const next = { ...(prev || {}), ...patch };
+  // Stamped from the abort flag rather than passed in as a patch. This is a
+  // read-modify-write, so a progress write that read the state before a cancel
+  // landed would put the flag straight back to false and the run would go on
+  // repainting as if the click had never happened — the original bug, just
+  // rarer. Deriving it also means it resets itself when the next run clears
+  // bulkAbort, with no way to leave a fresh backup stuck on "Cancelling…".
+  const next = { ...(prev || {}), ...patch, cancelling: bulkRunActive && bulkAbort.cancel };
   await chrome.storage.session.set({ [BULK_STATE_KEY]: next });
   bulkBroadcast({ type: 'BULK_STATE', state: next });
   return next;
@@ -2721,6 +2809,12 @@ async function runBulkCourseInner({ group, courseSlug, want }) {
       await recordAsset(group, courseSlug, lesson.lessonId, { status: 'failed', reason: record.reason });
     }
 
+    // A lesson abandoned mid-way by Cancel gets no record at all. runSummary
+    // derives notAttempted from `total - records.length`, so staying out of the
+    // list is what makes the summary say "not attempted" instead of inventing a
+    // saved or failed lesson for work that never landed.
+    if (record?.status === 'aborted') break;
+
     records.push({ ...record, title: lesson.title });
     done++;
     await setBulkState({ done, currentTitle: lesson.title, phase: 'running' });
@@ -2827,6 +2921,12 @@ async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtu
     } else {
       resolvedDesc = resolved.desc ?? null;
       const quality = pickBestQuality(resolved.qualities);
+      // Resolving a lesson is a page fetch, and it is where a run spends the gap
+      // between one video and the next — so it is where Cancel most often lands.
+      // There is no job to cancel yet at that moment (bulkCurrentJobId is null),
+      // so without this check the run would go on to download and merge a whole
+      // lesson after the click: the "Cancel did nothing for minutes" report.
+      if (bulkAbort.cancel) return { status: 'aborted' };
       await setBulkState({ lastLine: 'downloading video…' });
       const out = await enqueueDownloadAwaited({
         // The STEM, with no extension: runJob appends .mp4 itself, so passing
@@ -2850,7 +2950,10 @@ async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtu
           status: 'saved', video: { path: `${base}.mp4`, downloadId: out.downloadId, savedAt: Date.now() },
         });
       } else if (out.cancelled) {
-        return { status: 'failed', reason: 'cancelled' };
+        // Not a failure: nothing was written for this lesson and the user asked
+        // for that. Recording it as failed made a deliberate stop read as
+        // "failed 1" in the summary and in the run log.
+        return { status: 'aborted' };
       } else {
         await recordAsset(group, courseSlug, lesson.lessonId, { status: 'failed', reason: 'download' });
         tallyReason(runTally, 'download', `lesson "${String(lesson.title).slice(0, 60)}": ${out.error || 'download failed'}`);
