@@ -323,7 +323,19 @@ try {
         }
 
         const isVimeoJson = /vimeocdn\.com\/.*\/playlist\.json/.test(url);
-        if (!isVimeoJson) {
+        // Loom ships a video one of two ways, and only one of them is HLS.
+        // Longer sessions get luna.loom.com/id/<id>/rev/…/master.m3u8; the rest
+        // get a single signed progressive MP4. Measured 2026-08-06 against a
+        // real embed: the MP4 is requested on plain page load, with nothing
+        // clicked — so it is capturable exactly like a master, and without it a
+        // progressive Loom private to a classroom has no route at all.
+        //
+        // The path segment is load-bearing. cdn.loom.com also serves
+        // /sessions/thumbnails/<id>-<hash>.mp4, the silent hover preview, which
+        // is fetched on the same page load and is NOT the lesson. Matching
+        // "an mp4 on cdn.loom.com" would save that instead of the video.
+        const loomMp4 = /cdn\.loom\.com\/sessions\/transcoded\/([0-9a-f]{20,})\.mp4/i.exec(url);
+        if (!isVimeoJson && !loomMp4) {
           if (!url.includes('.m3u8')) return;
           const isMaster = url.includes('?token=') || url.includes('/playlist') || /master/i.test(url);
           if (!isMaster) return;
@@ -360,7 +372,7 @@ try {
         // Loom's API and can come back with nothing playable, and a customer
         // shown two rows has no way to know which one works.
         const loomId = platform === 'loom'
-          ? (url.match(/\/id\/([0-9a-f]{20,})/i) || [])[1] || null
+          ? (loomMp4 ? loomMp4[1] : (url.match(/\/id\/([0-9a-f]{20,})/i) || [])[1] || null)
           : null;
 
         const { tabId, frameId } = details;
@@ -381,6 +393,10 @@ try {
             url,
             headers,
             jsonPlaylist: isVimeoJson || undefined,
+            // Not a playlist of any kind — the file itself. Without this flag
+            // resolveQualities hands it to the m3u8 parser, which finds no
+            // renditions in an MP4 and reports the video as unresolvable.
+            progressive: loomMp4 ? true : undefined,
             sourceId: loomId || vimeoId,
             title: null
           });
@@ -2175,6 +2191,102 @@ async function scanCourse(group, courseSlug) {
   return { ...tree, group, courseSlug };
 }
 
+// ── Playback capture: the only route to a private embed ──────────────────────
+// A Loom set to "private to the classroom" — and the equivalent on Vimeo and
+// Wistia — is served ONLY to the platform's own player. loom.com's raw-url and
+// transcoded-url endpoints refuse it no matter what Referer we send, so the API
+// route (resolveLoomQualities) comes back with nothing and the lesson is skipped
+// as 'no-qualities'. Reported by a customer whose 106-lesson course backup
+// skipped exactly the 8 lessons that were private Loom embeds.
+//
+// The thing that DOES work is the signed master the player itself is handed,
+// which the webRequest sniffer already captures — that is what the single-lesson
+// path means when it tells a user to press play and reopen the extension.
+//
+// A course run has no user to press play, so it loads the lesson in a background
+// tab and waits for the player to ask for its own manifest. Player init requests
+// the master before playback actually starts, so this is a wait rather than a
+// synthetic click — which matters, because clicking would need the "scripting"
+// permission and a fresh Chrome Web Store justification.
+//
+// Only reached after the API route has already failed, so a course of ordinary
+// public embeds opens no tabs at all.
+const PLAYBACK_CAPTURE_MS = 15000;
+const PLAYBACK_POLL_MS = 250;
+
+// The captured entry for this tab, if the sniffer has filed one carrying a
+// signed master. Prefer an exact key match (the Loom case: a wire capture and a
+// page scan share `loom:<id>`), but accept a lone same-platform capture too —
+// an unlinked Vimeo lands under `vimeo-json:<clip uuid>`, which never matches
+// the numeric id the page scan holds.
+function capturedMasterFor(tabId, platform, sourceId) {
+  const t = tabVideos.get(tabId);
+  if (!t) return null;
+  const withMaster = [...t.videos.values()].filter((v) => v.url && v.platform === platform);
+  if (!withMaster.length) return null;
+  const exact = sourceId && withMaster.find((v) => v.sourceId === sourceId || v.key === `${platform}:${sourceId}`);
+  if (exact) return exact;
+  return withMaster.length === 1 ? withMaster[0] : null;
+}
+
+async function captureViaPlayback(lesson, sourceId) {
+  if (!chrome.windows?.create) return null;
+  let winId = null, tabId = null;
+  try {
+    // A MINIMIZED, UNFOCUSED WINDOW — not a background tab. Measured in real
+    // headed Chrome on 2026-08-06, opening a Loom embed four ways:
+    //
+    //   tabs.create({active:false})              324 requests, NO media
+    //   tabs.create({active:true})               media fetched, steals focus
+    //   windows.create({focused:false})          media fetched, no focus steal
+    //   windows.create({focused:false,minimized}) media fetched, no focus steal
+    //
+    // A background tab loads the player's scripts and then stops: it is never
+    // rendered, so the video element never asks for anything and the capture
+    // this function exists for never happens. The first version of this code
+    // used a background tab and silently captured nothing every time.
+    //
+    // Minimized and unfocused is the only combination that both renders and
+    // leaves the user alone — a course backup is explicitly a "close the popup
+    // and keep browsing" feature, so it must not take focus for every lesson.
+    const win = await chrome.windows.create({
+      url: lesson.lessonUrl, focused: false, state: 'minimized',
+    });
+    winId = win?.id ?? null;
+    tabId = win?.tabs?.[0]?.id ?? null;
+    if (tabId == null) return null;
+
+    const deadline = Date.now() + PLAYBACK_CAPTURE_MS;
+    while (Date.now() < deadline) {
+      // Cancel lands here as often as anywhere: this is a multi-second wait, and
+      // 1.5.1 exists because a run that ignored the click for minutes read as
+      // broken. Bail without waiting the deadline out.
+      if (bulkAbort.cancel) return null;
+      const hit = capturedMasterFor(tabId, lesson.sourceKind, sourceId);
+      // `progressive` must ride along, not just the URL. Without it the caller
+      // hands a signed MP4 to the m3u8 parser, which reads the whole file into a
+      // string, finds no #EXT-X-STREAM-INF, and calls it a single-rendition
+      // media playlist — so the download step then runs the HLS segment path
+      // over an MP4. Both branches label the result 'Original', which is what
+      // made this look like it worked.
+      if (hit) return { url: hit.url, headers: hit.headers || null, progressive: hit.progressive || false };
+      await new Promise((r) => setTimeout(r, PLAYBACK_POLL_MS));
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (winId != null) { try { await chrome.windows.remove(winId); } catch {} }
+    if (tabId != null) {
+      // onRemoved clears this too, but that listener is async relative to the
+      // next lesson: a stale entry here would let the following lesson match a
+      // capture belonging to this one.
+      tabVideos.delete(tabId);
+      forgetTabVimeoFrames(tabId);
+    }
+  }
+}
+
 // Resolve one lesson to something downloadable, called immediately before the
 // download itself rather than in a preflight sweep — a lesson page is around
 // half a megabyte and a playback token expires in about a day.
@@ -2280,7 +2392,7 @@ async function resolveBulkLesson(lesson) {
       // that skipped it would report 'no-qualities' on videos that play fine.
       const EMBED_API_HOST = { vimeo: 'player.vimeo.com', loom: 'www.loom.com', wistia: 'fast.wistia.net' };
       const apiHost = EMBED_API_HOST[lesson.sourceKind];
-      let resolved;
+      let resolved = null, apiError = null;
       try {
         if (apiHost) {
           await applyHeaderRules(BULK_RESOLVE_RULE_ID, `https://${apiHost}/`, { Referer: lesson.lessonUrl });
@@ -2289,15 +2401,42 @@ async function resolveBulkLesson(lesson) {
           platform: lesson.sourceKind, sourceId, pageUrl: lesson.lessonUrl,
         });
       } catch (e) {
-        return { kind: 'skip', reason: 'no-qualities',
-          detail: `${lesson.sourceKind}: ${String(e.message).slice(0, 90)}` };
+        // NOT a skip yet. A private embed fails here every time — that is the
+        // signature of the case playback capture exists for, so throwing away
+        // the run at this point is exactly the bug.
+        apiError = e;
       } finally {
         if (apiHost) await removeHeaderRules(BULK_RESOLVE_RULE_ID);
       }
-      const qualities = resolved?.qualities || [];
+
+      let qualities = resolved?.qualities || [];
+
       if (!qualities.length) {
-        return { kind: 'skip', reason: 'no-qualities', detail: `${lesson.sourceKind} returned no renditions` };
+        const captured = await captureViaPlayback(lesson, sourceId);
+        if (captured) {
+          try {
+            // Straight to resolveQualities with the signed master: its first
+            // branch prefers a captured `url` over any API lookup, so this is
+            // the same route a user gets after pressing play.
+            const viaPlayer = await resolveQualities({
+              platform: lesson.sourceKind, url: captured.url, headers: captured.headers,
+              progressive: captured.progressive,
+            });
+            qualities = viaPlayer?.qualities || [];
+          } catch (e) {
+            apiError = apiError || e;
+          }
+        }
       }
+
+      if (!qualities.length) {
+        return { kind: 'skip', reason: 'needs-playback',
+          detail: apiError
+            ? `${lesson.sourceKind}: ${String(apiError.message).slice(0, 90)}`
+            : `${lesson.sourceKind} is private to the classroom and did not load in time` };
+      }
+      // A capture carries its own signed headers; only fall back to the lesson
+      // Referer for qualities that came from the API route.
       // Same as the single-lesson path: the download step re-injects these for
       // token- and domain-gated CDN fetches.
       for (const q of qualities) if (!q.headers) q.headers = { Referer: lesson.lessonUrl };
@@ -2893,6 +3032,13 @@ async function runBulkLesson({ group, courseSlug, lesson, want, resources, youtu
 
   if (want.video && !isSettled(lesson.priorAssets.video)) {
     const resolved = await resolveBulkLesson(lesson);
+
+    // Resolving can now WAIT — playback capture holds a tab open for up to 15s
+    // on a private embed. A cancel landing in that window must leave the lesson
+    // untouched, not record the skip resolution returned on the way out: 1.5.1
+    // established that a deliberate stop reads as "not attempted", never as a
+    // lesson that was tried and failed.
+    if (bulkAbort.cancel) return { status: 'aborted' };
 
     if (resolved.kind === 'skip') {
       // Kinds that can never succeed settle so they are not retried forever;

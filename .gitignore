@@ -16,3 +16,4 @@ worker/
 
 # Maintainer-only release tooling (lives with the Worker).
 scripts/publish-version.mjs
+.loom-verify-profile/

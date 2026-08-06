@@ -14,6 +14,28 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.2 — 2026-08-06
+
+### Fixed
+- **A course backup can now save Loom lessons that are private to the
+  classroom.** Loom serves those only to its own player, so the lookup a course
+  run used came back empty every time and the lesson was skipped — one customer's
+  106-lesson backup skipped exactly the 8 lessons that were private Loom embeds,
+  reporting only "8 skipped" with no reason a reader could act on. The run now
+  opens such a lesson in a minimised background window and takes the stream from
+  the player itself, which is the same route that pressing play has always given
+  a single-lesson download. The window is never focused, so a run still leaves
+  you to carry on working. Only lessons the ordinary lookup could not resolve go
+  through it, so a course of public embeds behaves exactly as before.
+- **Shorter Loom lessons can be saved at all.** Loom delivers those as a single
+  signed MP4 rather than a stream, and the extension only ever watched for
+  streams — so nothing was captured for them and a private one had no route at
+  all, in a course backup or on its own.
+- **A backup says what it could not take, and what to do about it.** Lessons
+  still unreachable that way are now listed as private to the classroom, with
+  the step that gets them one at a time, instead of being counted under a
+  generic skip.
+
 ## 1.5.1 — 2026-08-05
 
 ### Fixed

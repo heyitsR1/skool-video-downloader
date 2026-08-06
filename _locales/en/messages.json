@@ -565,6 +565,14 @@
     }
   },
   "bulkNotAttempted": { "message": "$COUNT$ not attempted — the run was cancelled first", "placeholders": { "count": { "content": "$1" } } },
+  "bulkSkipNeedsPlayback": {
+    "message": "$COUNT$ private to the classroom — open each one, press play, then download it from this menu (listed in _download-log.txt)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
   "bulkSkipYoutube": {
     "message": "$COUNT$ hosted on YouTube — see _youtube-lessons.txt",
     "placeholders": {

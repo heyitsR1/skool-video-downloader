@@ -901,6 +901,12 @@ function bulkRenderDone(msg) {
   // which the run log now contradicts.
   if (s.notAttempted) add(bulkT('bulkNotAttempted', s.notAttempted));
   if (s.skippedByReason?.locked) add(bulkT('bulkSkipLocked', s.skippedByReason.locked));
+  // Without a line of its own this was a bare number in "skipped", which reads
+  // as an incomplete run with no explanation — the exact report that prompted
+  // it. These lessons ARE gettable, one at a time, so say how.
+  if (s.skippedByReason?.['needs-playback']) {
+    add(bulkT('bulkSkipNeedsPlayback', s.skippedByReason['needs-playback']));
+  }
   if (s.skippedByReason?.youtube) add(bulkT('bulkSkipYoutube', s.skippedByReason.youtube));
   for (const f of msg.failedDetail || []) add(`${f.title} — ${f.reason}`);
   bulkShow('bulk-done');

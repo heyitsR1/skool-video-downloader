@@ -109,6 +109,62 @@ for (let i = 0; i < 300; i++) link.rememberVimeoFrame(1, i, `id${i}`);
 ok('frame links are bounded', link.vimeoFrames.size <= link.VIMEO_LINK_MAX);
 check('…keeping the most recent', link.vimeoIdForCapture(1, 299, null), 'id299');
 
+// ── 1b. Loom progressive capture: which URL is the lesson? ──────────────────
+// Loom serves shorter sessions as ONE signed MP4 rather than an HLS ladder, and
+// requests it on plain page load (measured in real Chrome, 2026-08-06). The
+// sniffer has to recognise it, and must not mistake the silent hover-preview
+// clip fetched on the very same load for the video.
+console.log('\nthe Loom progressive-MP4 gate:');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
+  const m = /const loomMp4 = (\/.+?\/i)\.exec\(url\)/.exec(src);
+  ok('the shipped pattern is found in background.js', !!m);
+  const re = m && eval(m[1]);            // the literal from the source, not a copy
+  const ID = '09b1aa507cb846138847bf8e98b56a71';
+  const transcoded = `https://cdn.loom.com/sessions/transcoded/${ID}.mp4?Policy=eyJTdGF0ZW1lbnQ`;
+  const thumb = `https://cdn.loom.com/sessions/thumbnails/${ID}-b5213f287fcef7f0.mp4`;
+  ok('the transcoded session matches', re.test(transcoded));
+  check('and yields the share id', (re.exec(transcoded) || [])[1], ID);
+  // Both are mp4s on cdn.loom.com fetched on the same page load. Matching the
+  // host alone would save a silent preview clip as the lesson.
+  ok('the hover-preview thumbnail does NOT match', !re.test(thumb));
+  ok('an unrelated loom asset does not match',
+    !re.test('https://cdn.loom.com/assets/js/vendor-0-31b2ba46930806da.js'));
+}
+
+// A captured progressive file must not reach the m3u8 parser: there is no
+// playlist in an MP4, so it would resolve to no renditions and the lesson would
+// be reported unplayable with the working URL already in hand.
+{
+  const code = extract('detectors.js', ['resolveQualities']);
+  const calls = [];
+  const api = new Function('deps', `
+    const { resolveVimeoJsonQualities, resolveMuxQualities, resolveVimeoQualities,
+            resolveWistiaQualities, resolveLoomQualities, resolveYouTubeQualities } = deps;
+    ${code}
+    return { resolveQualities };
+  `)({
+    resolveMuxQualities: async (u) => { calls.push(['mux', u]); return [{ height: 720 }]; },
+    resolveLoomQualities: async (id) => { calls.push(['loomApi', id]); return [{ height: 480 }]; },
+    resolveVimeoJsonQualities: async () => [], resolveVimeoQualities: async () => [],
+    resolveWistiaQualities: async () => [], resolveYouTubeQualities: async () => ({ qualities: [] }),
+  });
+  const url = 'https://cdn.loom.com/sessions/transcoded/abc.mp4?Policy=x';
+  const r = await api.resolveQualities({
+    platform: 'loom', progressive: true, url, sourceId: 'abc', headers: { Referer: 'https://www.loom.com/' },
+  });
+  check('a captured progressive file resolves to one mp4 quality',
+    { n: r.qualities.length, kind: r.qualities[0].kind, url: r.qualities[0].videoUrl },
+    { n: 1, kind: 'mp4', url });
+  check('and it never touches the playlist parser or the Loom API', calls, []);
+  ok('its headers ride along', r.qualities[0].headers.Referer === 'https://www.loom.com/');
+
+  // The HLS capture must be unaffected — it still goes to the m3u8 parser.
+  calls.length = 0;
+  await api.resolveQualities({ platform: 'loom', url: 'https://luna.loom.com/id/abc/rev/1/master.m3u8?token=t' });
+  check('a captured HLS master still goes to the playlist parser', calls.map(c => c[0]), ['mux']);
+}
+
 // ── 2. Registry merge ───────────────────────────────────────────────────────
 // Linking is only worth anything if the merge keeps what each sighting knows:
 // the page scan has the id, the title and the share hash; the capture has the
@@ -445,13 +501,16 @@ console.log('\nlesson media resolution:');
     const code = extract('background.js', ['resolveBulkLesson', 'embedSourceId']);
     return new Function('d', `
       const { SOURCE, fetchPageProps, nativePlaybackFrom, resolveQualities, bulkPathOf, findLessonMeta,
-              applyHeaderRules, removeHeaderRules, BULK_RESOLVE_RULE_ID } = d;
+              applyHeaderRules, removeHeaderRules, BULK_RESOLVE_RULE_ID, captureViaPlayback } = d;
       ${code}
       return { resolveBulkLesson, embedSourceId };
     `)({
       SOURCE: bulk.SOURCE,
       nativePlaybackFrom: bulk.nativePlaybackFrom,
       findLessonMeta: bulk.findLessonMeta,
+      // Opens a real background tab in the extension. Default to "the player
+      // never showed up", so every existing case still describes the API route.
+      captureViaPlayback: async () => null,
       // Recorded rather than stubbed away: a resolve that goes out without the
       // Referer rule is a 403, and that is not visible in the result.
       applyHeaderRules: async (id, url, headers) => { headerRules.push({ id, url, headers }); return true; },
@@ -562,6 +621,83 @@ console.log('\nlesson media resolution:');
     const r = await build().resolveBulkLesson(lesson());
     check('a lesson page with no data is drift, not locked', r.reason, 'schema-drift');
     ok('and the detail carries the status', /HTTP 500/.test(r.detail));
+  }
+
+  // ── Private embeds: the playback-capture fallback ───────────────────────────
+  // A Loom private to the classroom refuses the API every time, so a course run
+  // skipped it as 'no-qualities' — 8 of one customer's 106 lessons. The signed
+  // master the player fetches is the only thing that works, so a failed API
+  // lookup must fall through to a capture rather than end the lesson.
+  {
+    const seen = [];
+    const r = await build({
+      resolveQualities: async (v) => {
+        seen.push(v);
+        if (!v.url) throw new Error('This Loom video can’t be fetched directly — it’s private');
+        return { qualities: [{ height: 1080, headers: { Referer: 'https://www.loom.com/' } }] };
+      },
+      captureViaPlayback: async () => ({ url: 'https://luna.loom.com/id/abc/rev/1/master.m3u8?token=t',
+                                         headers: { Referer: 'https://www.loom.com/' } }),
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.LOOM, sourceRef: 'https://www.loom.com/share/' + 'a'.repeat(32),
+      lessonUrl: 'https://www.skool.com/g/classroom/c?md=l3' }));
+
+    check('a private embed resolves through the captured master', r.kind, 'qualities');
+    check('the API route is tried first', seen.length, 2);
+    ok('and the second attempt carries the signed master, not the id',
+      !!seen[1].url && !seen[1].sourceId);
+    // The capture rides the signature the player was granted; overwriting its
+    // Referer with the Skool lesson URL is how you turn a working master into a 403.
+    check('the captured headers survive onto the quality',
+      r.qualities[0].headers.Referer, 'https://www.loom.com/');
+  }
+
+  // A captured PROGRESSIVE file must reach resolveQualities still flagged as
+  // one. Dropping the flag here does not look like a failure: resolveMuxQualities
+  // reads the whole MP4 into a string, finds no #EXT-X-STREAM-INF, and returns a
+  // single rendition labelled 'Original' — the same label the progressive branch
+  // gives. The difference only shows in `kind`, and the download step then runs
+  // the HLS segment path over a plain MP4.
+  {
+    let sawProgressive = null;
+    const r = await build({
+      resolveQualities: async (v) => {
+        if (!v.url) throw new Error('private');
+        sawProgressive = v.progressive;
+        return { qualities: [{ height: 0, kind: 'mp4' }] };
+      },
+      captureViaPlayback: async () => ({
+        url: 'https://cdn.loom.com/sessions/transcoded/' + 'd'.repeat(32) + '.mp4?Policy=x',
+        headers: { Referer: 'https://www.loom.com/' }, progressive: true }),
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.LOOM, sourceRef: 'https://www.loom.com/share/' + 'd'.repeat(32) }));
+    check('a captured progressive file stays flagged through the bulk path', sawProgressive, true);
+    check('and resolves as an mp4, not a playlist', r.qualities[0].kind, 'mp4');
+  }
+
+  // The player never showed up. Still a skip — but a differently named one, so
+  // the tally itself says these are gettable by hand rather than broken.
+  {
+    const r = await build({
+      resolveQualities: async () => { throw new Error('private to the classroom'); },
+      captureViaPlayback: async () => null,
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.LOOM, sourceRef: 'https://www.loom.com/share/' + 'b'.repeat(32) }));
+    check('an embed that never loads skips as needs-playback', r.reason, 'needs-playback');
+    ok('and needs-playback stays retryable', !bulk.SETTLED_SKIP_KINDS.includes(r.reason));
+    ok('the detail carries the real error', /private to the classroom/.test(r.detail));
+  }
+
+  // A public embed must not pay for the private case: no tab, no 15s wait.
+  {
+    let opened = 0;
+    const r = await build({
+      resolveQualities: async () => ({ qualities: [{ height: 720 }] }),
+      captureViaPlayback: async () => { opened++; return null; },
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.LOOM, sourceRef: 'https://www.loom.com/share/' + 'c'.repeat(32) }));
+    check('a public embed still resolves through the API', r.kind, 'qualities');
+    check('and opens no tab at all', opened, 0);
   }
 
   // Embed platforms: an id we cannot parse must never be guessed. A wrong id

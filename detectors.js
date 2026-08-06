@@ -443,6 +443,16 @@ async function resolveQualities(video) {
   if (video.jsonPlaylist && video.url) {
     return { qualities: await resolveVimeoJsonQualities(video.url) };
   }
+  // A captured progressive file (Loom's shorter sessions are one signed MP4, not
+  // an HLS ladder). There is nothing to parse and no rendition to choose: the
+  // URL the player streamed IS the download. Claimed before the wire branch
+  // below, which would otherwise hand an MP4 to the m3u8 parser.
+  if (video.progressive && video.url) {
+    return { qualities: [{
+      label: 'Original', height: 0, kind: 'mp4',
+      videoUrl: video.url, container: 'mp4', headers: video.headers,
+    }] };
+  }
   // Wire captures (webRequest) carry the already-signed master playlist URL.
   // For private embeds that URL is the ONLY thing that works: it rides the
   // signature the player itself was granted, where the platform API returns
