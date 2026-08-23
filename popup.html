@@ -36,7 +36,10 @@
     <!-- Trial / plan bar -->
     <div id="credits-row" class="credits-row">
       <span id="credits-text" class="credits-text" data-i18n="creditsLoading">Loading…</span>
-      <a id="lifetime-link" href="#" class="plan-link hidden" target="_blank" data-i18n="lifetimeLink">Get lifetime</a>
+      <!-- Lifetime plan discontinued for new sales (DMCA compliance — selling now
+           routes through our upgrade page (WELCOME_URL in popup.js -> the website's
+           /welcome page, which owns the checkout link). -->
+      <!-- <a id="lifetime-link" href="#" class="plan-link hidden" target="_blank" data-i18n="lifetimeLink">Get lifetime</a> -->
     </div>
     <button id="upgrade-btn" class="upgrade-cta hidden">
       <span class="upgrade-cta__bolt">⚡</span> <span data-i18n="upgradeBtn">Unlimited downloads &amp; full quality</span>
@@ -242,6 +245,9 @@
       <h2 class="modal__title" data-i18n="pricingTitle">Go Unlimited</h2>
       <p class="modal__sub" data-i18n="pricingSub">Your free plan covers 5 downloads a week. Unlock unlimited saves at every quality.</p>
 
+      <!-- Price intentionally not shown here — checkout now happens on our /welcome upgrade page (see buy-monthly
+           href = WELCOME_URL in popup.js); that page owns the checkout link
+           and price, and is editable over the air. This card stays purely a benefits pitch. -->
       <a id="buy-monthly" class="plan-card plan-card--featured" target="_blank">
         <span class="plan-card__flag" data-i18n="planMostPopular">🔥 MOST POPULAR</span>
         <div class="plan-card__head">
@@ -249,7 +255,6 @@
             <span class="plan-card__name" data-i18n="planMonthlyName">Monthly</span>
             <div class="plan-card__tagline" data-i18n="planMonthlyTagline">Cancel anytime · no commitment</div>
           </div>
-          <span class="plan-card__price">$9.99 <small>/mo</small></span>
         </div>
         <ul class="plan-card__list">
           <li data-i18n="planFeatureUnlimited">Unlimited downloads — no weekly cap</li>
@@ -263,11 +268,9 @@
         <p class="plan-card__reassure" data-i18n="planReassure">Secure checkout · Instant access</p>
       </a>
 
-      <!-- Two plans, one decision: rent it or own it. Lifetime gets a full card of
-           its own rather than a footnote link — it's the plan worth steering people
-           to, and a link under the CTA reads as an afterthought. Green rather than
-           amber so it's a second, different offer instead of a dimmer copy of the
-           card above. -->
+      <!-- Lifetime plan discontinued for new sales (DMCA compliance — everything
+           now routes through our /welcome upgrade page above). Left in place,
+           commented out, in case it needs reviving later.
       <a id="buy-lifetime" class="plan-card plan-card--value" target="_blank">
         <span class="plan-card__flag plan-card__flag--value" data-i18n="planBestValue">★ BEST VALUE</span>
         <div class="plan-card__head">
@@ -285,6 +288,7 @@
         <span class="plan-card__cta plan-card__cta--value" data-i18n="planCtaBuyOnce">Buy once, own forever</span>
         <p class="plan-card__reassure" data-i18n="planLifetimeReassure">Costs less than 11 months of Monthly</p>
       </a>
+      -->
 
       <button class="modal__later" data-close data-i18n="modalLater">Maybe later</button>
     </div>

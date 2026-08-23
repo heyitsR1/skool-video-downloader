@@ -3,25 +3,13 @@
 // resolution → enqueue. A live download-manager panel renders queue state from
 // background QUEUE_* broadcasts (progress, speed, cancel).
 
-// Freemius checkout — Skool Video Downloader (product 33457, plan 54961,
-// pricing 72637). MV3 popup CSP forbids loading Freemius's checkout.min.js, so
-// we open the hosted popup-mode checkout URL directly in a tab. The /plan/
-// segment takes the plan id (not the pricing id); one pricing object under that
-// plan carries both cycles ($9.99/mo, $99.99 lifetime) and billing_cycle
-// preselects which it opens on. The annual cycle still exists on the pricing
-// object but is deliberately not offered anywhere in the UI.
-// NOTE: the charged amount lives on Freemius's pricing object (id 72637) —
-// change it there; the copy in popup.html doesn't drive billing.
-const FS_PRODUCT_ID = 33457;
-const FS_PLAN_ID = 54961;
-const FS_CHECKOUT = `https://checkout.freemius.com/mode/popup/plugin/${FS_PRODUCT_ID}/plan/${FS_PLAN_ID}/`;
-
-// Short, canonical form — the site 308s the long /skool-video-downloader/... path
-// here anyway, and a purchase redirect shouldn't need an extra hop.
+// Checkout moved off Freemius (DMCA compliance). Every buy click now hands off
+// to OUR upgrade page, not straight to the checkout partner — the page owns the
+// offer (checkout URL, instructions, the receipt→key step) so all of it is
+// editable over the air via a website deploy, with no Chrome Web Store review.
+// The actual marketplace URL (with the ?via= affiliate code) lives on that page
+// now: src/pages/SkoolWelcome.tsx in the website repo.
 const WELCOME_URL = 'https://skoolvideodownload.com/welcome';
-
-const CHECKOUT_MONTHLY = `${FS_CHECKOUT}?billing_cycle=monthly`;
-const CHECKOUT_LIFETIME = `${FS_CHECKOUT}?billing_cycle=lifetime`;
 
 // Cancel page, offered when an automatic monthly cancellation after a lifetime
 // upgrade didn't go through.
@@ -113,12 +101,10 @@ async function initLicenseUI() {
   if (!status) return null;
   const badge = document.getElementById('tier-badge');
   const creditsText = document.getElementById('credits-text');
-  const lifetimeLink = document.getElementById('lifetime-link');
   const upgradeBtn = document.getElementById('upgrade-btn');
   const licenseSection = document.getElementById('license-section');
   const licenseLabel = document.querySelector('#license-section .label');
 
-  lifetimeLink.classList.add('hidden');
   upgradeBtn.classList.add('hidden');
 
   if (status.tier === 'lifetime') {
@@ -128,12 +114,7 @@ async function initLicenseUI() {
   } else if (status.tier === 'monthly') {
     badge.textContent = chrome.i18n.getMessage('badgePro'); badge.className = 'badge badge--pro';
     creditsText.textContent = chrome.i18n.getMessage('proCredits');
-    lifetimeLink.href = CHECKOUT_LIFETIME; lifetimeLink.classList.remove('hidden');
-    // A monthly subscriber who buys lifetime gets a brand-new key and needs
-    // somewhere to enter it — this box used to be hidden for paid tiers, which
-    // left the upgrade with no way to complete.
-    licenseLabel.textContent = t('licenseLabelUpgrade', 'Bought lifetime? Activate your new key');
-    licenseSection.classList.remove('hidden');
+    licenseSection.classList.add('hidden');
   } else {
     licenseLabel.textContent = chrome.i18n.getMessage('licenseLabel');
     badge.textContent = chrome.i18n.getMessage('badgeFree'); badge.className = 'badge badge--free';
@@ -539,8 +520,7 @@ function openPricingModal(subtitle) {
 }
 function closePricingModal() { document.getElementById('pricing-modal').classList.add('hidden'); }
 function setupPricingModal() {
-  document.getElementById('buy-monthly').href = CHECKOUT_MONTHLY;
-  document.getElementById('buy-lifetime').href = CHECKOUT_LIFETIME;
+  document.getElementById('buy-monthly').href = WELCOME_URL;
   document.querySelectorAll('#pricing-modal [data-close]').forEach(el => el.addEventListener('click', closePricingModal));
 }
 

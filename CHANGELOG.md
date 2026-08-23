@@ -14,6 +14,21 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.4 — 2026-08-22
+
+### Changed
+- The "Get Unlimited" button now opens our own upgrade guide at
+  <https://skoolvideodownload.com/welcome> instead of linking straight to the
+  marketplace listing, so the offer copy and instructions can be updated over
+  the air without shipping a new extension version.
+
+## 1.5.3 — 2026-08-14
+
+### Changed
+- Upgrade now hands off to the official listing at
+  <https://apps.serp.co/skool-video-downloader> instead of checking out
+  in-extension. The lifetime plan is no longer offered for new purchases.
+
 ## 1.5.2 — 2026-08-06
 
 ### Fixed
