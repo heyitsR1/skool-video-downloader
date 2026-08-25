@@ -1158,6 +1158,18 @@ async function downloadDirect(url, { onProgress, isCancelled, mimeType, signal }
   if (total > 0 && received < total) {
     throw new Error(`Download stopped early — got ${formatGB(received)} of ${formatGB(total)}. Try again.`);
   }
+  // A manifest is not a video, whatever its size. Loom's DASH manifest (68KB of
+  // XML) cleared every byte-count floor and shipped as a broken ".mp4" — so the
+  // progressive path also checks WHAT arrived, not just how much of it.
+  if (chunks.length) {
+    const head = new TextDecoder().decode(chunks[0].slice(0, 64)).trimStart();
+    if (head.startsWith('<?xml') || head.startsWith('<MPD') || head.startsWith('#EXTM3U')) {
+      throw new Error(
+        'The server sent a streaming manifest instead of the video file, so there is nothing to save. '
+        + 'Press play on the video in Skool, let it run for a few seconds, then download it again.'
+      );
+    }
+  }
   return new Blob(chunks, { type: mimeType || 'video/mp4' });
 }
 

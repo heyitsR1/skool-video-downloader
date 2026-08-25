@@ -14,6 +14,20 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.5 — 2026-08-25
+
+### Fixed
+- **Some Loom lessons downloaded as a tiny broken file (~66 KB) that no player
+  could open.** Loom now answers its video lookup with a DASH streaming
+  manifest for newer videos, and the extension mistook that manifest for the
+  video itself — it was just big enough (68 KB of XML) to clear the "is this
+  really a video?" size check. The manifest is now recognised and skipped, and
+  the lookup falls through to Loom's full MP4, which downloads normally. Also
+  raised that size check's floor from 64 KB to 1 MB, and the downloader now
+  refuses to save anything that arrives as a manifest rather than video data,
+  whatever its size — with a message saying what to do instead of a silent
+  broken file.
+
 ## 1.5.4 — 2026-08-22
 
 ### Changed

@@ -259,7 +259,13 @@ async function resolveWistiaQualities(sourceId) {
 // guard at save time is, and it sees the actual bytes. Refusing what we merely
 // failed to measure would trade a rare bad file for blocking working downloads
 // on any CDN that answers neither probe, which is the worse deal.
-const MIN_PLAUSIBLE_VIDEO_BYTES = 64 * 1024;
+//
+// 1MB, up from 64KB: Loom's DASH manifest for a 5-minute lesson measured 68KB —
+// past the old floor — so "smaller than any real lesson video" has to clear
+// manifests and stubs by a margin, not by 3%. A genuinely tiny real video is
+// refused too, but its failure path is the press-play message, and the wire
+// capture that pressing play arms is the route that always works.
+const MIN_PLAUSIBLE_VIDEO_BYTES = 1024 * 1024;
 async function isPlausiblyVideo(url) {
   const sizeOf = (res) => {
     if (!res.ok && res.status !== 206) return null;
@@ -300,6 +306,14 @@ async function resolveLoomQualities(sourceId) {
       if (data?.url) {
         const isHls = data.url.includes('.m3u8');
         if (isHls) return await resolveMuxQualities(data.url, { Referer: `https://www.loom.com/share/${sourceId}` });
+        // raw-url answers newer videos with a DASH manifest (…/dash/
+        // playlistmultibitrate.mpd) instead of an HLS master. It is not a
+        // video file, and it is not small either — a 5-minute lesson's
+        // manifest measured 68,348 bytes of XML, which sails past the size
+        // probe below and got saved as a broken 66.7KB ".mp4" (customer
+        // report, 2026-08-25). Skip to transcoded-url, which serves the full
+        // MP4 for these sessions.
+        if (/\.mpd(\?|$)/.test(data.url)) continue;
         // Loom answers this endpoint for videos it won't actually serve us with
         // a token-sized stub — one customer got 24,877 bytes. Downloading it
         // takes a while and yields an unplayable file, so the size check that
