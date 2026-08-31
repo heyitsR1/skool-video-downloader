@@ -203,6 +203,72 @@ check('init_segment_url fallback resolves',
   vimeoJson.vimeoTrackSegments(noB64, PLAYLIST_URL, 'video', 'v540').initUrl,
   'https://vod-adaptive-ak.vimeocdn.com/exp=1/acl/CLIP/psid=PS/v2/remux/avf/v540/v540/init.mp4?pathsig=i');
 
+// ── 2b. /config refused → inline playerConfig off the player page ───────────
+// 2026-08-31: a 21-lesson course backup skipped every Vimeo lesson because the
+// videos were "Hide from Vimeo" (privacy "disable") and Vimeo now 403s the
+// standalone /config endpoint for them — while the player page itself serves
+// 200 with the same config inline. The resolver must fall through to the page
+// and only report the /config error when the page refuses too.
+console.log('\nresolveVimeoQualities — player-page fallback when /config 403s:');
+const INLINE_CFG = {
+  request: { files: { progressive: [
+    { quality: '720p', height: 720, url: 'https://vod-progressive.example/720.mp4' },
+    { quality: '1080p', height: 1080, url: 'https://vod-progressive.example/1080.mp4' }
+  ] } },
+  video: { privacy: 'disable' }
+};
+const PLAYER_HTML = `<html><head><script>window.playerConfig = ${JSON.stringify(INLINE_CFG)}</script></head></html>`;
+
+const vimeoResolve = (fetchImpl) => {
+  const code = extract('detectors.js', [
+    'heightLabel', 'resolveVimeoQualities', 'fetchVimeoEmbedPageConfig',
+    'vimeoInlinePlayerConfig', 'vimeoConfigQualities', 'vimeoConfigError',
+    'resolveMuxQualities', 'resolveUrl'
+  ]);
+  return new Function('fetch', `${code}\nreturn { resolveVimeoQualities, vimeoInlinePlayerConfig };`)(fetchImpl);
+};
+
+const fallbackCalls = [];
+const viaPage = vimeoResolve(async (url) => {
+  fallbackCalls.push(url);
+  if (url.includes('/config')) return { ok: false, status: 403 };
+  return { ok: true, status: 200, text: async () => PLAYER_HTML };
+});
+const pageQualities = await viaPage.resolveVimeoQualities('1210721388', 'https://www.skool.com/x/classroom/y', null);
+check('403 config falls through to the player page, best-first',
+  pageQualities.map(q => q.label), ['1080p', '720p']);
+check('page fetched once, config once', fallbackCalls, [
+  'https://player.vimeo.com/video/1210721388/config',
+  'https://player.vimeo.com/video/1210721388'
+]);
+
+const bothRefuse = vimeoResolve(async () => ({ ok: false, status: 403, text: async () => 'nope' }));
+check('page refusing too reports the /config privacy error', await (async () => {
+  try { await bothRefuse.resolveVimeoQualities('1210721388', 'https://www.skool.com/x', null); return 'no throw'; }
+  catch (e) { return /private, and the page embeds it without the share link/.test(e.message) ? 'config error' : e.message; }
+})(), 'config error');
+
+const okConfig = vimeoResolve(async (url) => {
+  if (url.includes('/config')) return { ok: true, status: 200, json: async () => INLINE_CFG };
+  throw new Error('page must not be fetched when /config answers');
+});
+check('a working /config never touches the page',
+  (await okConfig.resolveVimeoQualities('1210721388', 'https://www.skool.com/x', null)).map(q => q.label),
+  ['1080p', '720p']);
+
+console.log('\nvimeoInlinePlayerConfig — parsing the inline blob:');
+const { vimeoInlinePlayerConfig } = viaPage;
+check('as served (no trailing semicolon)',
+  vimeoInlinePlayerConfig('<script>window.playerConfig = {"a":1}</script>'), { a: 1 });
+check('trailing semicolon tolerated',
+  vimeoInlinePlayerConfig('<script>window.playerConfig = {"a":1};</script>'), { a: 1 });
+check('nested braces and script tags inside strings survive',
+  vimeoInlinePlayerConfig('<script>window.playerConfig = {"a":{"b":"{x}"},"c":2}</script><script>other()</script>'),
+  { a: { b: '{x}' }, c: 2 });
+check('no playerConfig → null', vimeoInlinePlayerConfig('<html>Sorry</html>'), null);
+check('unparseable blob → null', vimeoInlinePlayerConfig('<script>window.playerConfig = {broken</script>'), null);
+check('null input → null', vimeoInlinePlayerConfig(null), null);
+
 // ── 3. Live: Vimeo's config endpoint still answers ──────────────────────────
 // The embed path is still the only one that works without pressing play, so a
 // silent change to /config should fail this test rather than a user's download.
@@ -217,6 +283,22 @@ try {
   console.log(`  · progressive: ${files.progressive?.length || 0}, hls cdns: ${Object.keys(files.hls?.cdns || {}).length}`);
 } catch (e) {
   console.error(`  ✗ config fetch failed: ${e.message}`);
+  failures++;
+}
+
+// ── 3b. Live: the player page still carries playerConfig inline ─────────────
+// This is the fallback's whole load-bearing assumption; if Vimeo moves the
+// config out of the page, this fails here rather than in a customer's backup.
+console.log('\nlive — player page inline playerConfig:');
+try {
+  const res = await fetch('https://player.vimeo.com/video/76979871');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const cfg = vimeoInlinePlayerConfig(await res.text());
+  const files = cfg?.request?.files || {};
+  check('player page config parses with streams',
+    !!(files.progressive?.length || files.hls?.cdns || files.dash?.cdns), true);
+} catch (e) {
+  console.error(`  ✗ player page fetch failed: ${e.message}`);
   failures++;
 }
 

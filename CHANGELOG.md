@@ -14,6 +14,19 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.7 — 2026-08-31
+
+### Fixed
+- **Vimeo lessons stopped downloading — notes and files saved, but every video
+  was skipped ("This Vimeo video is private…"), in course backups and
+  single-lesson downloads alike.** Vimeo switched off the standalone config
+  endpoint the extension used for videos set to "Hide from Vimeo", the privacy
+  mode many Skool creators use, so every lookup came back 403 even though the
+  video plays fine on the lesson page. The player page itself still carries
+  the same stream information inline, so when the endpoint refuses, the
+  extension now reads it from there instead. Genuinely private videos behave
+  as before: press play, then download.
+
 ## 1.5.6 — 2026-08-31
 
 ### Fixed

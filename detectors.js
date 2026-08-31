@@ -91,14 +91,66 @@ function resolveUrl(url, baseUrl, parentQuery) {
 // the id alone is not enough: Vimeo answers 403 `PrivacyError` — the same status
 // a wrong hash gets, hence the two different messages below. Skool's own embed
 // builder keeps only `pathname.split('/')[1]` of the link a creator pasted, so
-// the iframe it renders carries no hash at all and this path simply cannot
-// resolve those videos; the wire-captured playlist below is their only route.
+// the iframe it renders carries no hash at all and this path cannot resolve
+// those videos from /config alone.
+//
+// When /config refuses, the player PAGE is tried before giving up. Measured
+// 2026-08-31 against a live course whose backup skipped all 20 Vimeo lessons:
+// every video was "Hide from Vimeo" (privacy: "disable" — link-only viewing, no
+// hash involved), /config answered 403 with and without a Skool Referer, yet
+// player.vimeo.com/video/<id> served 200 with the full playerConfig inline —
+// same JSON /config used to return, signed HLS/DASH masters included. That is
+// how the video keeps playing for the member while /config dies, so the page is
+// authoritative wherever the endpoint has been switched off.
 async function resolveVimeoQualities(sourceId, pageUrl, hParam) {
   const url = `https://player.vimeo.com/video/${sourceId}/config${hParam ? `?h=${hParam}` : ''}`;
   const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(vimeoConfigError(res.status, hParam));
-  const cfg = await res.json();
+  let cfg;
+  if (res.ok) {
+    cfg = await res.json();
+  } else {
+    cfg = await fetchVimeoEmbedPageConfig(sourceId, hParam);
+    // The original /config status carries the diagnosis (403 = privacy), so a
+    // page that also refused reports the endpoint's error, not its own.
+    if (!cfg) throw new Error(vimeoConfigError(res.status, hParam));
+  }
+  return await vimeoConfigQualities(cfg, pageUrl);
+}
 
+// The player iframe page, when /config has refused. Returns the parsed inline
+// playerConfig, or null so the caller can fall back to the /config error — a
+// genuinely private video refuses both, and the wire capture stays its only
+// route.
+async function fetchVimeoEmbedPageConfig(sourceId, hParam) {
+  try {
+    const res = await fetch(
+      `https://player.vimeo.com/video/${sourceId}${hParam ? `?h=${hParam}` : ''}`,
+      { credentials: 'include' }
+    );
+    if (!res.ok) return null;
+    return vimeoInlinePlayerConfig(await res.text());
+  } catch {
+    return null;
+  }
+}
+
+// `window.playerConfig = {…}` sits in its own inline <script>, the JSON object
+// running to the closing tag (no trailing semicolon as served, but one is
+// tolerated). Anything that doesn't parse is null, never a throw — the caller
+// owns the error message.
+function vimeoInlinePlayerConfig(html) {
+  const at = String(html || '').indexOf('window.playerConfig');
+  if (at === -1) return null;
+  const eq = html.indexOf('=', at);
+  const end = html.indexOf('</script>', at);
+  if (eq === -1 || end === -1 || eq > end) return null;
+  const raw = html.slice(eq + 1, end).trim().replace(/;$/, '');
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+// Qualities out of a player config, wherever it came from (/config endpoint or
+// the inline copy on the player page — same shape).
+async function vimeoConfigQualities(cfg, pageUrl) {
   const out = [];
   const prog = cfg?.request?.files?.progressive || [];
   for (const f of prog) {
