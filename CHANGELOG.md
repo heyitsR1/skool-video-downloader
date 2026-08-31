@@ -14,6 +14,20 @@ Keep this file updated as part of the release checklist in
 [README.md](README.md#releasing): the entry here is the source the GitHub release
 notes are written from.
 
+## 1.5.6 — 2026-08-31
+
+### Fixed
+- **Course backups skipped unlisted Vimeo lessons as "private to the
+  classroom" even when the lesson itself stored the video's share link.**
+  Vimeo only answers for an unlisted video when the request carries the share
+  hash from its link, and a course run was reading just the video id out of
+  the lesson's stored link — so every unlisted Vimeo was refused, and each one
+  then cost the run a 15-second wait for a player that could never load. The
+  run now sends the share hash from the lesson's own link, and when the hash
+  only appears elsewhere on the lesson page, it is picked up during that wait
+  and used for a second attempt. Lessons whose page carries no share hash at
+  all still can't be exported — Vimeo's own player can't load those either.
+
 ## 1.5.5 — 2026-08-25
 
 ### Fixed

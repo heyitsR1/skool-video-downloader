@@ -234,6 +234,27 @@ check('two captures are reported, not guessed between',
 check('a Loom capture is not a Vimeo stand-in',
   link.vimeoStandIns(PAGE_SCAN, [PAGE_SCAN, { key: 'loom:x', platform: 'loom', jsonPlaylist: true, url: 'u' }]).length, 0);
 
+// ── 2b. pageHashFor — the capture window's second prize ─────────────────────
+// When a bulk capture window catches nothing on the wire (a hash-less private
+// iframe never streams), the content script running in that window may still
+// have filed the video's share hash from the lesson page. captureViaPlayback
+// hands that hash back so the caller can re-run the config route with it.
+console.log('\npageHashFor — hash filed by the capture window\'s page scan:');
+{
+  const ph = (() => {
+    const code = extract('background.js', ['tabVideos', 'pageHashFor']);
+    return new Function(`${code} return { tabVideos, pageHashFor };`)();
+  })();
+  ph.tabVideos.set(7, { videos: new Map([
+    ['vimeo:1219892144', { key: 'vimeo:1219892144', platform: 'vimeo', hParam: 'abcdef1234' }],
+    ['vimeo:857588786', { key: 'vimeo:857588786', platform: 'vimeo' }],
+  ]) });
+  check('a scan entry carrying the hash yields it', ph.pageHashFor(7, '1219892144'), 'abcdef1234');
+  check('a hash-less entry yields nothing (the h=no case)', ph.pageHashFor(7, '857588786'), null);
+  check('an id the scan never saw yields nothing', ph.pageHashFor(7, '999888777'), null);
+  check('a tab with no registry yields nothing', ph.pageHashFor(8, '1219892144'), null);
+}
+
 // ── 3. Save failures ────────────────────────────────────────────────────────
 // Every one of these used to read "a download manager may be intercepting
 // downloads", including a dismissed Save-as dialog.
@@ -495,13 +516,28 @@ console.log('\nlesson media resolution:');
   const { createRequire } = await import('node:module');
   const bulk = createRequire(import.meta.url)(path.join(ROOT, 'bulk.js'));
 
+  // The shipped vimeoLinkHash, cut out by brace-counting alone: its regex
+  // literals contain quote characters, which the string-aware extract() above
+  // misreads as string openers. vimeo-smoke.mjs pins this function's behaviour;
+  // here it only needs to be the real one, in scope for resolveBulkLesson.
+  const vimeoLinkHash = (() => {
+    const src = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
+    const words = src.match(/^const VIMEO_PATH_WORDS = .+$/m)[0];
+    const decl = src.indexOf('function vimeoLinkHash(');
+    if (decl === -1) { console.error('✗ could not find vimeoLinkHash in background.js — source drifted'); process.exit(1); }
+    let depth = 0, j = src.indexOf('{', decl);
+    for (; j < src.length; j++) { if (src[j] === '{') depth++; else if (src[j] === '}' && --depth === 0) break; }
+    return new Function(`${words}\n${src.slice(decl, j + 1)}\nreturn vimeoLinkHash;`)();
+  })();
+
   let headerRules = [];
   const build = (deps = {}) => {
     headerRules = [];
     const code = extract('background.js', ['resolveBulkLesson', 'embedSourceId']);
     return new Function('d', `
       const { SOURCE, fetchPageProps, nativePlaybackFrom, resolveQualities, bulkPathOf, findLessonMeta,
-              applyHeaderRules, removeHeaderRules, BULK_RESOLVE_RULE_ID, captureViaPlayback } = d;
+              applyHeaderRules, removeHeaderRules, BULK_RESOLVE_RULE_ID, captureViaPlayback, bulkLog,
+              vimeoLinkHash } = d;
       ${code}
       return { resolveBulkLesson, embedSourceId };
     `)({
@@ -511,6 +547,8 @@ console.log('\nlesson media resolution:');
       // Opens a real background tab in the extension. Default to "the player
       // never showed up", so every existing case still describes the API route.
       captureViaPlayback: async () => null,
+      bulkLog: () => {},
+      vimeoLinkHash,
       // Recorded rather than stubbed away: a resolve that goes out without the
       // Referer rule is a 403, and that is not visible in the result.
       applyHeaderRules: async (id, url, headers) => { headerRules.push({ id, url, headers }); return true; },
@@ -565,6 +603,74 @@ console.log('\nlesson media resolution:');
     ok('the vimeo API fetch carries a Referer', !!applied?.headers?.Referer);
     ok('scoped to the vimeo API host', /player\.vimeo\.com/.test(applied.url));
     ok('and the rule is cleaned up', headerRules.some(r => r.removed));
+  }
+
+  // ── The share hash: the 2026-08-31 report ───────────────────────────────────
+  // 12 Vimeo lessons skipped 'needs-playback' because the bulk path pulled only
+  // the numeric id out of each lesson's videoLink — so every unlisted video's
+  // config fetch went out bare and 403'd with the hash sitting in the link,
+  // then paid 15 seconds for a capture window that had nothing to catch.
+  {
+    const seen = [];
+    let opened = 0;
+    const r = await build({
+      resolveQualities: async v => { seen.push(v); return { qualities: [{ height: 1080 }] }; },
+      captureViaPlayback: async () => { opened++; return null; },
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.VIMEO, sourceRef: 'https://vimeo.com/1219892144/abcdef1234',
+      lessonUrl: 'https://www.skool.com/g/classroom/c?md=l4' }));
+    check('the copy-link hash rides into the config fetch', seen[0].hParam, 'abcdef1234');
+    check('and the lesson resolves', r.kind, 'qualities');
+    check('with no capture window at all', opened, 0);
+  }
+
+  // No hash in the link and nothing on the wire — but the capture window's own
+  // page scan filed the hash. The config route gets a second, authorised run.
+  {
+    const seen = [];
+    const r = await build({
+      resolveQualities: async v => {
+        seen.push(v);
+        if (!v.hParam) throw new Error('This Vimeo video is private…');
+        return { qualities: [{ height: 720 }] };
+      },
+      captureViaPlayback: async () => ({ hParam: 'feedbeef12' }),
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.VIMEO, sourceRef: 'https://vimeo.com/1219892144',
+      lessonUrl: 'https://www.skool.com/g/classroom/c?md=l5' }));
+    check('a page-recovered hash re-runs the config route', r.kind, 'qualities');
+    check('bare first, hash second', seen.map(v => v.hParam || null), [null, 'feedbeef12']);
+    // The retry is its own fetch, made after the first rule was removed.
+    check('the Referer rule is applied for both fetches', headerRules.filter(x => x.headers).length, 2);
+    check('and removed after both', headerRules.filter(x => x.removed).length, 2);
+    ok('the retried qualities get the lesson Referer for the download step',
+      r.qualities.every(q => q.headers?.Referer));
+  }
+
+  // The retried hash can still be refused (an embed restricted to certain
+  // sites). The skip must then surface the hash-carrying error — the truer one.
+  {
+    const r = await build({
+      resolveQualities: async v => {
+        throw new Error(v.hParam ? 'Vimeo rejected this video’s share link (403)' : 'This Vimeo video is private…');
+      },
+      captureViaPlayback: async () => ({ hParam: 'feedbeef12' }),
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.VIMEO, sourceRef: 'https://vimeo.com/1219892144' }));
+    check('a refused hash still skips as needs-playback', r.reason, 'needs-playback');
+    ok('and the detail names the share-link rejection', /rejected/.test(r.detail));
+  }
+
+  // A hash the first attempt already carried is not retried — it just failed.
+  {
+    let tries = 0;
+    const r = await build({
+      resolveQualities: async () => { tries++; throw new Error('Vimeo rejected this video’s share link (403)'); },
+      captureViaPlayback: async () => ({ hParam: 'abcdef1234' }),
+    }).resolveBulkLesson(lesson({
+      sourceKind: bulk.SOURCE.VIMEO, sourceRef: 'https://vimeo.com/1219892144/abcdef1234' }));
+    check('the same hash is not retried', tries, 1);
+    check('and the lesson skips needs-playback', r.reason, 'needs-playback');
   }
 
   // The locked case. Everything on the page looks healthy; only the token is

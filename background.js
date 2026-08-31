@@ -2241,6 +2241,17 @@ function capturedMasterFor(tabId, platform, sourceId) {
   return withMaster.length === 1 ? withMaster[0] : null;
 }
 
+// A Vimeo share hash the capture window's own content script recovered from
+// the lesson page and filed into the registry (a scan entry, so it carries no
+// signed url — capturedMasterFor never sees it). Not a capture, but it re-arms
+// the config route, which for a video the player itself can't start (hash-less
+// iframe → the player 403s too, so nothing ever crosses the wire) is the only
+// other way in.
+function pageHashFor(tabId, sourceId) {
+  const v = tabVideos.get(tabId)?.videos.get(`vimeo:${sourceId}`);
+  return v?.hParam || null;
+}
+
 async function captureViaPlayback(lesson, sourceId) {
   if (!chrome.windows?.create) return null;
   let winId = null, tabId = null;
@@ -2269,6 +2280,7 @@ async function captureViaPlayback(lesson, sourceId) {
     if (tabId == null) return null;
 
     const deadline = Date.now() + PLAYBACK_CAPTURE_MS;
+    let hashHint = null;
     while (Date.now() < deadline) {
       // Cancel lands here as often as anywhere: this is a multi-second wait, and
       // 1.5.1 exists because a run that ignored the click for minutes read as
@@ -2282,9 +2294,14 @@ async function captureViaPlayback(lesson, sourceId) {
       // over an MP4. Both branches label the result 'Original', which is what
       // made this look like it worked.
       if (hit) return { url: hit.url, headers: hit.headers || null, progressive: hit.progressive || false };
+      // A wire capture is strictly better than a hash (already signed, works
+      // even where the hash is domain-refused), so a hash spotted mid-wait is
+      // remembered rather than returned early — the full deadline stays the
+      // player's chance to ask for its stream.
+      if (!hashHint && lesson.sourceKind === SOURCE.VIMEO) hashHint = pageHashFor(tabId, sourceId);
       await new Promise((r) => setTimeout(r, PLAYBACK_POLL_MS));
     }
-    return null;
+    return hashHint ? { hParam: hashHint } : null;
   } catch {
     return null;
   } finally {
@@ -2404,13 +2421,19 @@ async function resolveBulkLesson(lesson) {
       // that skipped it would report 'no-qualities' on videos that play fine.
       const EMBED_API_HOST = { vimeo: 'player.vimeo.com', loom: 'www.loom.com', wistia: 'fast.wistia.net' };
       const apiHost = EMBED_API_HOST[lesson.sourceKind];
+      // The share hash rides in on the videoLink itself when the creator pasted
+      // Vimeo's "Copy link" form. 2026-08-31 report: a course run skipped 12
+      // Vimeo lessons 'needs-playback' — each one a config 403 followed by a
+      // 15-second capture window that had nothing to catch, when at least one
+      // lesson's own link held the hash the whole time.
+      const hParam = lesson.sourceKind === SOURCE.VIMEO ? vimeoLinkHash(lesson.sourceRef) : null;
       let resolved = null, apiError = null;
       try {
         if (apiHost) {
           await applyHeaderRules(BULK_RESOLVE_RULE_ID, `https://${apiHost}/`, { Referer: lesson.lessonUrl });
         }
         resolved = await resolveQualities({
-          platform: lesson.sourceKind, sourceId, pageUrl: lesson.lessonUrl,
+          platform: lesson.sourceKind, sourceId, pageUrl: lesson.lessonUrl, hParam,
         });
       } catch (e) {
         // NOT a skip yet. A private embed fails here every time — that is the
@@ -2425,7 +2448,7 @@ async function resolveBulkLesson(lesson) {
 
       if (!qualities.length) {
         const captured = await captureViaPlayback(lesson, sourceId);
-        if (captured) {
+        if (captured?.url) {
           try {
             // Straight to resolveQualities with the signed master: its first
             // branch prefers a captured `url` over any API lookup, so this is
@@ -2437,6 +2460,26 @@ async function resolveBulkLesson(lesson) {
             qualities = viaPlayer?.qualities || [];
           } catch (e) {
             apiError = apiError || e;
+          }
+        } else if (captured?.hParam && captured.hParam !== hParam) {
+          // Nothing on the wire, but the capture window's own content script
+          // recovered the video's share hash from the lesson page. Re-run the
+          // config route with it — the same fetch that just 403'd, now
+          // authorised.
+          bulkLog(`vimeo ${sourceId}: retrying config with share hash from lesson page`);
+          try {
+            await applyHeaderRules(BULK_RESOLVE_RULE_ID, `https://${apiHost}/`, { Referer: lesson.lessonUrl });
+            const viaHash = await resolveQualities({
+              platform: lesson.sourceKind, sourceId, pageUrl: lesson.lessonUrl,
+              hParam: captured.hParam,
+            });
+            qualities = viaHash?.qualities || [];
+          } catch (e) {
+            // Replace, don't keep: this error names the hash-carrying attempt
+            // ("rejected share link") and is the truer one for the report.
+            apiError = e;
+          } finally {
+            await removeHeaderRules(BULK_RESOLVE_RULE_ID);
           }
         }
       }
@@ -2497,6 +2540,27 @@ function embedSourceId(platform, url) {
   if (platform === SOURCE.VIMEO) { m = /vimeo\.com\/(?:video\/)?(\d{6,})/i.exec(s); return m ? m[1] : null; }
   if (platform === SOURCE.WISTIA) { m = /(?:medias|iframe)\/([A-Za-z0-9]{8,})/i.exec(s); return m ? m[1] : null; }
   return null;
+}
+
+// The Vimeo share hash carried by the lesson's stored link, when there is one.
+// Mirrors vimeoHash() in content.js: the hash reaches a videoLink two ways —
+// ?h=<hash> (embed code) and vimeo.com/<id>/<hash> (Vimeo's "Copy link", the
+// form a creator actually pastes into Skool). Skool's embed builder strips it
+// from the iframe it renders, so this link is often the only copy of it a
+// course run will ever see — and without it the config route 403s on every
+// unlisted video.
+//
+// Path segments that are Vimeo routes rather than hashes. A wrong hash fails
+// exactly like a missing one, so this list is tidiness, not correctness.
+const VIMEO_PATH_WORDS = /^(?:videos?|likes|albums|channels|collections|groups|settings|embed|config)$/i;
+function vimeoLinkHash(url) {
+  const s = String(url || '');
+  // Charset stays permissive: `[0-9a-f]+` silently truncates a hash at its
+  // first non-hex character, and a truncated hash is a wrong hash.
+  const q = s.match(/[?&]h=([^&"'\s\\]+)/);
+  if (q) return q[1];
+  const p = s.match(/(?:player\.)?vimeo\.com\/(?:video\/)?\d{6,}\/([A-Za-z0-9]{6,})/);
+  return p && !VIMEO_PATH_WORDS.test(p[1]) ? p[1] : null;
 }
 
 // ── Asset writers ─────────────────────────────────────────────────────────────

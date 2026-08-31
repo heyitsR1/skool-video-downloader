@@ -102,6 +102,28 @@ check('hash of a different video is not borrowed',
   vimeoHashFromPage('1210721388', ['{"a":"https://vimeo.com/999888777/aaaaaaaaaa","b":"vimeo.com/1210721388"}']),
   null);
 
+// ── 1b. vimeoLinkHash (background.js) — the bulk path's extractor ───────────
+// A course run never runs content.js, so the bulk resolver has its own copy.
+// 2026-08-31 report: 12 Vimeo lessons skipped 'needs-playback' because the
+// bulk path pulled only the numeric id out of the lesson's videoLink and
+// fetched /config bare — every unlisted video 403'd with its hash in hand.
+console.log('\nvimeoLinkHash (background.js) — the bulk path keeps the hash:');
+const { vimeoLinkHash } = (() => {
+  const code = extract('background.js', ['VIMEO_PATH_WORDS', 'vimeoLinkHash']);
+  return new Function(`${code}\nreturn { vimeoLinkHash };`)();
+})();
+check('copy-link path form (what creators paste)',
+  vimeoLinkHash('https://vimeo.com/1219892144/abcdef1234'), 'abcdef1234');
+check('embed-code query form',
+  vimeoLinkHash('https://player.vimeo.com/video/1219892144?h=abc123def4&app_id=1'), 'abc123def4');
+check('hash-less link stays hash-less (the h=no case)',
+  vimeoLinkHash('https://vimeo.com/1219892144'), null);
+check('route segment is not mistaken for a hash',
+  vimeoLinkHash('https://vimeo.com/1219892144/videos'), null);
+check('non-hex hash is not truncated',
+  vimeoLinkHash('https://vimeo.com/1219892144?h=8272103f6ez'), '8272103f6ez');
+check('null link', vimeoLinkHash(null), null);
+
 // ── 2. Wire-captured DASH playlist (detectors.js) ───────────────────────────
 // Fixture mirrors a real capture: base_url values are relative and chain three
 // deep, and every segment shares one path with a distinct signing query — so
